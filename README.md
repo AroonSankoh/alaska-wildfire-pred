@@ -34,6 +34,7 @@ Check the env.yml for environment dependencies, conda is the recommended package
 ```bash
 conda env create -f env.yml
 conda activate wildfire-pred
+```
 
 ## Reproduction
 Data was collected over the clear fire in Fairbanks, Alaska (LAT: 64, LON: -149), which began on June 27 2022. To obtain the same scenes, search "Fairbanks, US" in the Copernicus Browser and zoom to around 50km. Pre-fire scenes are dated May 27 2022 and post-fire scenes are dated June 27 2022. There is currently a tutorial notebook that steps you through how to use the sentinel-2 loader, further tutorials are currently being developed.
