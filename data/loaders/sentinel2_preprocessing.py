@@ -2,8 +2,6 @@ import numpy as np
 import rasterio 
 from rasterio.enums import Resampling
 
-nir_shape = None
-
 def load_band(file_path, resample_continuous=True, target_shape=None):
     """
     Load a band from a raster file and resample it to the target shape using bilinear interpolation.
@@ -26,12 +24,15 @@ def load_band(file_path, resample_continuous=True, target_shape=None):
             (dataset.height / data.shape[-2])
         )
         band_array = data[0] # Error if the band is not single channel
+        
     return band_array, transform
 
 def calculate_nbr(nir_path, swir_path):
      """ 
      Calculate Normalized Burn Ratio (NBR) from NIR and SWIR images.
+     Returns NIR and SWIR bands as well to minimize any ineffiency from loading bands multiple times. 
      """
+
      # retrieve bands with compatible resolutions
      nir_band, nir_transform = load_band(nir_path)
      swir_band, _ = load_band(swir_path, target_shape=nir_band.shape)
@@ -44,13 +45,33 @@ def calculate_nbr(nir_path, swir_path):
      nbr = np.zeros(num.shape)
      np.divide(num, den, out=nbr, where= den!=0)
      
-     return nbr, nir_transform, nir_shape  
+     return nbr, nir_band, swir_band, nir_transform
 
-def apply_cloud_mask(nir_path, swir_path, scl_path, shape):
+def calculate_ndvi(nir_path, red_path):
+    """
+    Calculate Normalized Difference Vegetation Index from Red and NIR images. 
+    Returns NIR and Red bands as well to minimize any ineffiency from loading bands multiple times.
+    """
+
+    # retrieve bands with compatible resolutions 
+    nir_band, nir_transform = load_band(nir_path)
+    red_band, _ = load_band(red_path)
+    nir_band = nir_band.astype(np.float64)
+    red_band = red_band.astype(np.float64)
+
+    # calculate ndvi with safe division 
+    num = nir_band - red_band
+    den = nir_band + red_band 
+    ndvi = np.zeros(num.shape)
+    np.divide(num, den, out=ndvi, where= den!=0)
+
+    return ndvi, nir_band, red_band, nir_transform
+
+def apply_cloud_mask(nbr, scl_path, shape):
      """
-     Masks clouds and cloud shadows using the scene classification layer (SCL) file.
+     Masks clouds and cloud shadows of an NBR file using the scene classification layer (SCL) file.
      """
-     # Unnecessary file analysis categories to mask out
+     # unnecessary file analysis categories to mask out
      risk_categories = {
           "cloud_shadows": 3, 
           "med_prob_cloud": 8, 
@@ -65,10 +86,36 @@ def apply_cloud_mask(nir_path, swir_path, scl_path, shape):
              & (scl != risk_categories["high_prob_cloud"])
              & (scl != risk_categories["thin_cirrus"]))
 
-     nbr, nir_transform, _ = calculate_nbr(nir_path, swir_path)
      filtered_nbr = np.where(mask, nbr, np.nan)
 
-     return filtered_nbr, nir_transform
+     return filtered_nbr
+
+def load_sentinel2_bands(red_path, green_path, nir_path, swir_path, scl_path):
+    """ 
+    Loads all bands useful for fire prediction and analysis from a Sentinel-2 scene.
+    """
+    # retrieve bands by indices, raw bands, and any transformations 
+    nbr, nir_band, swir_band, nir_transform = calculate_nbr(nir_path, swir_path)
+    ndvi, _, red_band, _ = calculate_ndvi(nir_path, red_path)
+    green_band, _ = load_band(green_path)
+    filtered_nbr = apply_cloud_mask(nbr, scl_path, nir_band.shape)
+    bands = {
+         "indices": {"ndvi": ndvi, "nbr": nbr, "filtered_nbr": filtered_nbr}, 
+         "raw_bands": {"red": red_band, "green": green_band, "nir": nir_band, "swir": swir_band} 
+    }
+
+    # retrieve coordinate reference system from the NIR band 
+    with rasterio.open(nir_path) as dataset: 
+             source_crs = dataset.crs
+
+    return bands, nir_transform, nir_band.shape, source_crs
+
+
+
+
+
+
+
 
 
 
