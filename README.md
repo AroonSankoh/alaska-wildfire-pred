@@ -1,4 +1,33 @@
-Last Updated: 03/17/2026 
+# Hybrid Wildfire Detection Model
 
-If you are a reviewer from GSoC or Univ. of Alaska, please clone this repo locally and then navigate to the demo notebook for instructions on how to test this prototype. 
-Do not hesitate to reach out to me over Github or email (aroonjsankoh@gmail.com) with questions! 
+This is a stub design for a hybrid wildfire detection model that seeks to predict an area's risk of wildfire within 1, 3, and 6 month periods. The model processes and aggregates data from three sources (two satellite and one weather data), feeds this aggregated data into a hybrid convolutional-transformer deep learning model, and then output a fire risk score within the previously mentioned time horizons. All data required to perform inference for this model can be freely obtained online! 
+
+## Data Sources 
+Sentinel-1 is a satellite that uses Synthetic Aperture Radar (SAR) to image the ground at 20m resolution. You can obtain a Sentinel-1 scene through the Copernicus Open Access Hub (https://dataspace.copernicus.eu/). 
+
+Sentinel-2 is a satellite that uses high-res optics to image the ground at 10m resolution. You can obtain a Sentinel-2 scene through the Copernicus Open Access Hub (https://dataspace.copernicus.eu/). 
+
+ERA5 uses ECMWF reanalysis to collect periodic weather data, such as temperature, humidity, windspeed, etc. You can obtain an ERA5 data package from the Copernicus Climate Data Store (https://cds.climate.copernicus.eu/). 
+
+## Repository Structure 
+> data
+    > aggregator 
+        > aggregator.py
+    > loaders 
+        > era5_preprocessor.py
+        > sentinel1_preprocessor.py
+        > sentinel2_preprocessor.py
+> model 
+    > architecture.py
+    > dataset.py
+> notebooks
+    > sentinel2_demo.ipynb
+> scripts
+env.yml
+README.md
+
+## Setup 
+Check the env.yml for environment dependencies, conda is the recommended package manager. Run the following in your terminal once conda is installed and working: 
+```bash
+conda env create -f env.yml
+conda activate wildfire-pred
