@@ -10,21 +10,24 @@ Sentinel-2 is a satellite that uses high-res optics to image the ground at 10m r
 ERA5 uses ECMWF reanalysis to collect periodic weather data, such as temperature, humidity, windspeed, etc. You can obtain an ERA5 data package from the Copernicus Climate Data Store (https://cds.climate.copernicus.eu/). 
 
 ## Repository Structure 
-> data
-    > aggregator 
-        > aggregator.py
-    > loaders 
-        > era5_preprocessor.py
-        > sentinel1_preprocessor.py
-        > sentinel2_preprocessor.py
-> model 
-    > architecture.py
-    > dataset.py
-> notebooks
-    > sentinel2_demo.ipynb
-> scripts
-env.yml
-README.md
+```
+wildfire-pred/
+├── data/
+│   ├── aggregator/
+│   │   └── zonal_aggregator.py
+│   └── loaders/
+│       ├── era5_preprocessor.py
+│       ├── sentinel1_preprocessor.py
+│       └── sentinel2_preprocessor.py
+├── model/
+│   ├── architecture.py
+│   └── dataset.py
+├── notebooks/
+│   └── sentinel2_demo.ipynb
+├── scripts/
+├── env.yml
+└── README.md
+```
 
 ## Setup 
 Check the env.yml for environment dependencies, conda is the recommended package manager. Run the following in your terminal once conda is installed and working: 
