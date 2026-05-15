@@ -18,8 +18,8 @@ class dataset(torch.utils.data.Dataset):
         _ , tile = self.data_list[index]
 
         # flatten and concatenate the sentinel statistics into a single vector
-        s1_flattened = flatten_stats(tile["s1_stats"])
-        s2_flattened = flatten_stats(tile["s2_stats"])
+        s1_flattened = flatten_stats(tile["s1_stats"] or {})
+        s2_flattened = flatten_stats(tile["s2_stats"] or {})
 
         ## TODO: replace with mean imputation, replacing NaNs with zeros is not mathematically accurate
         x_spatial = torch.tensor(np.nan_to_num(np.concatenate([list(s1_flattened.values()), list(s2_flattened.values())]))).float()

@@ -3,7 +3,7 @@ import requests
 import numpy as np 
 import rasterio
 import xml.etree.ElementTree as ET
-from utils.geo_utils import vectorize, orthorectify, dem_crs
+from utils.geo_utils import vectorize, orthorectify, meters_per_degree, dem_crs
 from rasterio.merge import merge 
 from scipy.interpolate import griddata
 from tqdm import tqdm
@@ -41,11 +41,13 @@ def apply_rtc(vh_band, vv_band, transform, target_crs, output_dir, xml_annotatio
      queries = get_dem_tile_coords(min_long, min_lat, max_long, max_lat)
      tile_file_paths = download_dem_tiles(queries, output_dir)
      dem = prepare_dem(tile_file_paths, transform, vh_band.shape, target_crs)
-     
+
      # calculate the slope and aspect
      dy, dx = np.gradient(dem)
-     dx_real = dx / transform.a
-     dy_real = dy / abs(transform.e)
+     center_lat = transform.f
+     meters_per_deg_lat, meters_per_deg_long = meters_per_degree(center_lat)
+     dx_real = dx / (transform.a * meters_per_deg_long) 
+     dy_real = dy / (abs(transform.e) * meters_per_deg_lat)
      nx = -dx_real
      ny = -dy_real
      nz = np.ones_like(dem)  
@@ -69,11 +71,13 @@ def apply_rtc(vh_band, vv_band, transform, target_crs, output_dir, xml_annotatio
      cos_local = normal_nx * look_x + normal_nz * look_z
 
      # mask layover and shadow pixels before division
-     valid = np.abs(cos_local) > threshold
+     valid = cos_local > threshold
      vh_rtc = np.where(valid, vh_band / cos_local, np.nan)
      vv_rtc = np.where(valid, vv_band / cos_local, np.nan)
 
-     print(f"masked pixels: {(~valid).sum()} / {valid.size}")
+
+     print("RTC complete.")
+     print(f"Masked pixels: {(~valid).sum()} / {valid.size}")
 
      return {"vh_band": vh_rtc, "vv_band": vv_rtc}
 
@@ -88,9 +92,6 @@ def get_dem_tile_coords(min_long, min_lat, max_long, max_lat):
      """
      Returns list (lat, long) integer tile corners needed to cover the bounding box.
      """
-     print(f"Bounds: {min_long}, {min_lat}, {max_long}, {max_lat}")
-
-     print("grabbing dem tile coords")
 
      # calculate all lat, long combinations
      lats = np.arange(np.floor(min_lat), np.ceil(max_lat))
@@ -114,7 +115,7 @@ def get_dem_tile_coords(min_long, min_lat, max_long, max_lat):
                   f"https://copernicus-dem-30m.s3.amazonaws.com/{tile_name}/{tile_name}.tif"
              ))
 
-     print("tile coords retrieved")
+     print("DEM tile coordinates retrieved.")
 
      return aws_queries
             
@@ -131,7 +132,7 @@ def download_dem_tiles(aws_queries, output_dir):
          save_path = os.path.join(output_dir, filename + ".tiff")
 
          if os.path.isfile(save_path):
-              print(f"File {filename} already exists.")
+              print(f"The file {filename} already exists.")
          else: 
             # stream file downloads for memory efficiency
             with requests.get(query[1], stream=True) as response:
@@ -152,7 +153,7 @@ def prepare_dem(tile_paths, target_transform, target_shape, target_crs):
      Mosaic, reproject, and clip DEM tiles to match the S1 scene grid.
      """
 
-     print("preparing dem...")
+     print("Preparing DEM for RTC computation.")
 
      # stitch each individual tile into a continuous raster
      sources = [rasterio.open(p) for p in tile_paths]
@@ -172,7 +173,6 @@ def prepare_dem(tile_paths, target_transform, target_shape, target_crs):
           resampling=rasterio.warp.Resampling.bilinear
      )
 
-     print("dem prepared.")
      return dest_array
 
 def parse_incidence_angles(xml_annotation_path):
@@ -232,6 +232,6 @@ def load_sentinel1_bands(vh_path, vv_path, xml_annotation_path, output_dir):
 
      bands = {"vh_band": vh_db_conv, "vv_band": vv_db_conv}
 
-     return bands, vh_transform, vh_band.shape
+     return bands, vh_transform, vh_db_conv.shape, src_crs
 
 

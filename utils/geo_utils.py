@@ -10,8 +10,6 @@ def vectorize(transform, shape, source_crs):
     """
     Produce longtitude and latitute arrays by vectorizing the given transformation.
     """
-
-    print("vectorizing...")
     lat_long_coord_format = "EPSG:4326"
 
     # retrieve row and col indices from band shape
@@ -26,12 +24,11 @@ def vectorize(transform, shape, source_crs):
     x = np.array(x).reshape(shape)
     y = np.array(y).reshape(shape)
 
-    latitudes, longitudes = warp_transform(source_crs, lat_long_coord_format, x.ravel(), y.ravel())
-    latitudes = np.array(latitudes).reshape(shape)
+    longitudes, latitudes = warp_transform(source_crs, lat_long_coord_format, x.ravel(), y.ravel())
     longitudes = np.array(longitudes).reshape(shape)
+    latitudes = np.array(latitudes).reshape(shape)
 
-    print("vectorize completed.")
-    return np.array(latitudes), np.array(longitudes)
+    return np.array(longitudes), np.array(latitudes)
 
 def orthorectify(data, gcps, gcp_crs):
     """
@@ -56,4 +53,15 @@ def orthorectify(data, gcps, gcp_crs):
     )
     
     return destination, transform, gcp_crs
+
+def meters_per_degree(lat):
+    """
+    Returns meters per degree latitude and meters per degree longitude at a given latitude.
+    """
+    lat_rad = np.deg2rad(lat)
+
+    # there are approximately 111,320 meters per degree latitude
+    return 111320, 111320 * np.cos(lat_rad)
+
+
 

@@ -40,9 +40,9 @@ conda activate wildfire-pred
 Data was collected over the clear fire in Fairbanks, Alaska (LAT: 64.32, LON: -149.13), which began on June 27 2022. To obtain the same scenes, search "Fairbanks, US" in the Copernicus Browser and zoom to around 50km. Pre-fire scenes are dated May 29 2022 and post-fire scenes are dated Aug 8 2022 for Sentinel-2 and Aug 9 2022 for Sentinel-1. Remember to set the cloud cover filter "MSI" to at least 20% when searching for the correct scene, or else your data will be corrupted. There is currently a tutorial notebook that steps you through how to use the sentinel-2 loader, further tutorials are currently being developed.
 
 ## TODOs
-Functions yet to implement include: 
-- Fire Weather Index calculator for ERA5 data
-- Radiometric Terrain Correction for S1 scenes
-- Cross-attention fusion for model encoders 
+Additions (in order of importance) yet to implement include: 
 - Mean imputation for NaN values within tiles
+- Cross-attention fusion for model encoders 
+- Improved masking for Sentinel-2 
+- Fire Weather Index calculator for ERA5 data
 - Tutorial notebooks for loaders, model training, and hyper-parameter optimization
