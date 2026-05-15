@@ -1,0 +1,22 @@
+# Ignore cache and geospatial files
+*.pyc
+__pycache__/
+.ipynb_checkpoints/
+*.tiff
+*.nc
+*.grib
+*.idx
+
+# Folders
+AK-Satellite-Imagery-Wildfire-Prediction/
+
+# Ignore raw satellite data
+*.SAFE/
+Sentinel1_pre/
+Sentinel2_L2A/
+S1_*/
+S2_*/
+
+# Ignore macOS system files
+.DS_Store
+**/.DS_Store
