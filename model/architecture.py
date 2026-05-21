@@ -53,7 +53,7 @@ class TransformerEncoder(nn.Module):
         """
         Forward propogation call for a 2D transformer encoder.
         """
-        X = self.trans_encoder(X.T.unsqueeze(1))
+        X = self.trans_encoder(X.unsqueeze(0).unsqueeze(0))
         # collapse sequence dimension by taking the mean
         X = X.mean(0)
         X = self.linear(X)
@@ -71,6 +71,7 @@ class WildfireModel(nn.Module):
         super().__init__();
         self.spatial_encoder = CNNEncoder(spatial_input_dim, embedding_dim)
         self.temporal_encoder = TransformerEncoder(temporal_input_dim, embedding_dim, n_head, n_layers)
+        self.attention = nn.MultiheadAttention(embedding_dim, n_head)
         self.head_1month = nn.Linear(embedding_dim * 2, 1)
         self.head_3month = nn.Linear(embedding_dim * 2, 1) 
         self.head_6month = nn.Linear(embedding_dim * 2, 1)
@@ -83,26 +84,25 @@ class WildfireModel(nn.Module):
         spatial_embeddings = self.spatial_encoder(x_spatial)
         temporal_embeddings = self.temporal_encoder(x_temporal)
 
-        fused_output = torch.cat([spatial_embeddings, temporal_embeddings], dim=-1)
+        fused_output, weights = self.cross_attention_fusion(spatial_embeddings, temporal_embeddings)
+        fused_output = torch.cat([fused_output.squeeze(0), spatial_embeddings], dim=1)
 
         head1 = F.sigmoid(self.head_1month(fused_output))
         head2 = F.sigmoid(self.head_3month(fused_output))
         head3 = F.sigmoid(self.head_6month(fused_output))
 
-        return head1, head2, head3
+        return head1, head2, head3, weights
     
     def cross_attention_fusion(self, spatial_embeddings, temporal_embeddings):
         """
         Implement cross-attention fusion between spatial and temporal embeddings so spatial embeddings 
         attend to the time series to learn which time steps are most important per tile.
-        TODO: Implement the full function and replace simple concatenation.
+
         """
-        raise NotImplementedError("RTC not yet implemented.")
+        query = spatial_embeddings
+        keys = temporal_embeddings
+        values = temporal_embeddings
+        attn_output, attn_output_weights = self.attention(query.unsqueeze(0), keys.unsqueeze(0), values.unsqueeze(0))
+        
+        return attn_output, attn_output_weights
     
-
-
-
-
-
-
-
