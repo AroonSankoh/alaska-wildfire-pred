@@ -37,6 +37,15 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
     # vectorize and bin each pixel according to the shape of each separate scene 
     sentinel1_longs, sentinel1_lats = vectorize(vh_transform, vh_shape, s1_crs)
     sentinel2_longs, sentinel2_lats = vectorize(nir_transform, nir_shape, s2_crs)
+
+    # assert the bounding boxes of Sentinel-1 and Sentinel-2 fall within ERA5s
+    if (np.min(era5_lats) > np.min(sentinel1_lats) or np.max(era5_lats) < np.max(sentinel1_lats)
+        or np.min(era5_longs) > np.min(sentinel1_longs) or np.max(era5_longs) < np.max(sentinel1_longs)):
+            raise ValueError("Sentinel-1 coordinate range falls outside ERA5 coordinate range.")
+    if (np.min(era5_lats) > np.min(sentinel2_lats) or np.max(era5_lats) < np.max(sentinel2_lats)
+        or np.min(era5_longs) > np.min(sentinel2_longs) or np.max(era5_longs) < np.max(sentinel2_longs)):
+            raise ValueError("Sentinel-2 coordinate range falls outside ERA5 coordinate range.")
+    
     x_indices_s1, y_indices_s1 = bin_data(sentinel1_lats, sentinel1_longs, era5_lats, era5_longs)
     x_indices_s2, y_indices_s2 = bin_data(sentinel2_lats, sentinel2_longs, era5_lats, era5_longs)
 

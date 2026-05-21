@@ -41,8 +41,7 @@ Data was collected over the clear fire in Fairbanks, Alaska (LAT: 64.32, LON: -1
 
 ## TODOs
 Additions (in order of importance) yet to implement include: 
-- Mean imputation for NaN values within tiles
 - Cross-attention fusion for model encoders 
-- Improved masking for Sentinel-2 
+- Masking for Sentinel-2 that accounts for fragmented scenes
 - Fire Weather Index calculator for ERA5 data
 - Tutorial notebooks for loaders, model training, and hyper-parameter optimization
