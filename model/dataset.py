@@ -12,14 +12,21 @@ class dataset(torch.utils.data.Dataset):
         self.statistic_means = {}
 
         # retrieve mean values from all source statistics for mean imputation
-        _ , first_tile = self.data_list[0]
-        for key in first_tile["s1_stats"].keys():
+        valid_tile = None
+        for _, tile in self.data_list:
+             if tile["s1_stats"] is not None and tile["s2_stats"] is not None and tile["era5_stats"] is not None:
+                  valid_tile = tile
+                  break
+        if valid_tile is None:
+              raise ValueError("No valid (non-NaN) tiles exist to initialize the dataset with.")
+
+        for key in valid_tile["s1_stats"].keys():
             self.statistic_means[f"mean_{key}"] = np.mean([tile["s1_stats"][key] for _, tile in self.data_list 
                                                            if tile["s1_stats"] is not None])
-        for key in first_tile["s2_stats"].keys():
+        for key in valid_tile["s2_stats"].keys():
             self.statistic_means[f"mean_{key}"] = np.mean([tile["s2_stats"][key] for _, tile in self.data_list 
                                                            if tile["s2_stats"] is not None])
-        for key in first_tile["era5_stats"].keys():
+        for key in valid_tile["era5_stats"].keys():
             self.statistic_means[f"mean_{key}"] = np.mean([tile["era5_stats"][key] for _, tile in self.data_list 
                                                            if tile["era5_stats"] is not None])
 
@@ -32,7 +39,7 @@ class dataset(torch.utils.data.Dataset):
 
         s1_keys = ['vh_band_mean', 'vh_band_std', 'vv_band_mean', 'vv_band_std']
         s2_keys = ['red_mean', 'red_std', 'green_mean', 'green_std', 'nir_mean', 'nir_std', 'swir_mean', 
-                   'swir_std', 'ndvi_mean', 'ndvi_std', 'nbr_mean', 'nbr_std', 'filtered_nbr_mean', 'filtered_nbr_std']
+                   'swir_std', 'ndvi_mean', 'ndvi_std', 'nbr_mean', 'nbr_std']
         era5_keys = ['u10', 'v10', 'd2m', 't2m', 'tp']
 
         # mean imputation for Sentinel-1, Sentinel-2, and ERA5

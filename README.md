@@ -41,6 +41,7 @@ Data was collected over the clear fire in Fairbanks, Alaska (LAT: 64.32, LON: -1
 
 ## TODOs
 Additions (in order of importance) yet to implement include: 
-- Masking for Sentinel-2 that accounts for fragmented scenes
-- Fire Weather Index calculator for ERA5 data
+- Training data collection 
+- Fire Weather Index calculator for ERA5 data (it'd be a very useful performance benchmark)
+- Training and inference scripts
 - Tutorial notebooks for loaders, model training, and hyper-parameter optimization

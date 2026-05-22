@@ -12,7 +12,15 @@ def bin_data(lats, longs, era5_lats, era5_lons):
 
     return x_inds, y_inds
 
-
+def nullify_nan(stats):
+     """
+     Check if pixels for Sentinel-1 or Sentinel-2 were masked, if so set their dict to None.
+     """
+     if stats is None or all(np.isnan(v) for v in stats.values()):
+         return None
+     else: 
+         return stats
+                
 def aggregate(sentinel1_data, sentinel2_data, era5_data):
     """
     Aggregate Sentinel-1 data, Sentinel-2 data, and ERA5 data using a tiling strategy. 
@@ -56,7 +64,7 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
                           **{k: v.ravel() for k, v in sentinel1_bands.items()}})
     s1_stats = s1_df.groupby(['x', 'y']).agg(['mean', 'std'])
 
-    s2_combined = {**sentinel2_bands["raw_bands"], **sentinel2_bands["indices"]}
+    s2_combined = {**sentinel2_bands["filtered_bands"], **sentinel2_bands["indices"]}
     s2_df = pd.DataFrame({'x': x_indices_s2.ravel(), 'y': y_indices_s2.ravel(), 
                           **{k: v.ravel() for k, v in s2_combined.items()}})
     s2_stats = s2_df.groupby(['x', 'y']).agg(['mean', 'std'])
@@ -81,4 +89,6 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
                     'tp':  float(era5_sorted['tp'].isel(latitude=i, longitude=j).mean().item()),
                 }
             }
+            tiles[(i, j)]["s1_stats"] = nullify_nan(tiles[(i, j)]["s1_stats"])
+            tiles[(i, j)]["s2_stats"] = nullify_nan(tiles[(i, j)]["s2_stats"])
     return tiles
