@@ -20,3 +20,6 @@ S2_*/
 # Ignore macOS system files
 .DS_Store
 **/.DS_Store
+
+# Ignore .env
+.env
