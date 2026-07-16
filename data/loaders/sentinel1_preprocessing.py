@@ -5,18 +5,21 @@ import rasterio
 import xml.etree.ElementTree as ET
 from utils.geo_utils import vectorize, orthorectify, meters_per_degree, dem_crs
 from rasterio.merge import merge 
-from scipy.interpolate import griddata
+from scipy.interpolate import griddata, make_interp_spline
 from tqdm import tqdm
 
-def load_sar_band(file_path):
+def load_sar_band(sar_file_path, calibration_path):
     """
     Load GeoTIFF bands and convert raw digital numbers to decibels for normalization.
     """
-    with rasterio.open(file_path) as dataset:
+    with rasterio.open(sar_file_path) as dataset:
         if dataset.count > 1:
              raise ValueError("The band must be single channel, but the dataset has multiple bands.")
         data = dataset.read(1).astype(np.float64)
         gcps, gcp_crs = dataset.gcps
+
+        # Calibrate to sigma-naught before orthorectification
+        data = calibrate_to_sigma(data, calibration_path)
 
         if gcps: 
             data, transform, crs = orthorectify(data, gcps, gcp_crs)
@@ -30,6 +33,51 @@ def load_sar_band(file_path):
         
     return data, transform, crs
 
+def parse_calibration_lut(calibration_path, field="sigmaNought"):
+    """
+    Parse the sparse (line, pixel) calibration from a Sentinel-1 calibration xml annotation file.
+    """
+    tree = ET.parse(calibration_path)
+    root = tree.getroot()
+    vectors = root.findall(".//calibrationVector")
+
+    lines = np.array([int(v.find("line").text) for v in vectors])
+    pixel_lists = [v.find("pixel").text.split() for v in vectors]
+    pixels = np.array([int(p) for p in pixel_lists[0]])
+
+    if not all(pl == pixel_lists[0] for pl in pixel_lists):
+        raise ValueError(f"Calibration pixel grid is not unfiform across lines in {calibration_path}")
+    
+    values = np.array([
+        [float(x) for x in v.find(field).text.split()]
+        for v in vectors
+    ])
+    return lines, pixels, values 
+
+def interpolate_calibration_lut(lines, pixels, values, shape):
+    """
+    Interpolate the sparse calibration LUT onto the full native resolution pixel grid using bilinear interpolation.
+    """
+    n_rows, n_cols = shape
+
+    # interpolate along the pixel (column) axis, once per sparse
+    col_targets = np.arange(n_cols)
+    dense_cols = np.empty((len(lines), n_cols), dtype=np.float64)
+    for i in range(len(lines)):
+        dense_cols[i] = np.interp(col_targets, pixels, values[i])
+        
+    # interpolate along the line (row) axis, vectorized across
+    row_targets = np.arange(n_rows)
+    row_interpolator = make_interp_spline(lines, dense_cols, k=1, axis=0)
+    return row_interpolator(row_targets)
+
+def calibrate_to_sigma(dn_data, calibration_path):
+    """
+    Converts raw digital numbers to calibrated sigma-naught using the Sentinel-1 calibration LUT (DN^2 / A^2).
+    """
+    lines, pixels, sigma_naught_lut = parse_calibration_lut(calibration_path, field="sigmaNought")
+    a = interpolate_calibration_lut(lines, pixels, sigma_naught_lut, dn_data.shape)
+    return (dn_data.astype(np.float64) ** 2) / (a ** 2)
 
 def apply_rtc(vh_band, vv_band, transform, target_crs, output_dir, xml_annotation_path, threshold=0.05):
      """
@@ -212,12 +260,12 @@ def interpolate_incidence_angles(lines, pixels, angles, shape):
     return interpolated_angles.reshape(shape)
 
      
-def load_sentinel1_bands(vh_path, vv_path, xml_annotation_path, output_dir):
+def load_sentinel1_bands(vh_path, vv_path, vh_cal_path, vv_cal_path, xml_annotation_path, output_dir):
      """
      Loads all bands useful for fire prediction and analysis from a Sentinel-1 scene.
      """
-     vh_band, vh_transform, src_crs = load_sar_band(vh_path)
-     vv_band, _, _= load_sar_band(vv_path)
+     vh_band, vh_transform, src_crs = load_sar_band(vh_path, vh_cal_path)
+     vv_band, _, _= load_sar_band(vv_path, vv_cal_path)
 
      bands = apply_rtc(vh_band, vv_band, vh_transform, src_crs, output_dir, xml_annotation_path)
 
