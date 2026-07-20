@@ -52,8 +52,11 @@ class TransformerEncoder(nn.Module):
     def forward(self, X):
         """
         Forward propogation call for a 2D transformer encoder.
+        Accepts both 1-D (temporal_dim) and batched (batch, temporal_dim) inputs.
         """
-        X = self.trans_encoder(X.unsqueeze(0).unsqueeze(0))
+        if X.dim() == 1:
+            X = X.unsqueeze(0)
+        X = self.trans_encoder(X.unsqueeze(0))
         # collapse sequence dimension by taking the mean
         X = X.mean(0)
         X = self.linear(X)
@@ -79,8 +82,11 @@ class WildfireModel(nn.Module):
     def forward(self, x_spatial, x_temporal):
         """
         Forward propogation call for the full conv-transformer model. 
+        Accepts both unbatched or batched inputs.
         """
-        x_spatial = x_spatial.unsqueeze(0).unsqueeze(0)
+        if x_spatial.dim() == 1:
+            x_spatial = x_spatial.unsqueeze(0) 
+        x_spatial = x_spatial.unsqueeze(1)
         spatial_embeddings = self.spatial_encoder(x_spatial)
         temporal_embeddings = self.temporal_encoder(x_temporal)
 

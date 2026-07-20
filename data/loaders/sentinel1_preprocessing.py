@@ -5,31 +5,42 @@ import rasterio
 import xml.etree.ElementTree as ET
 from utils.geo_utils import vectorize, orthorectify, meters_per_degree, dem_crs
 from rasterio.merge import merge 
+from rasterio.control import GroundControlPoint
 from scipy.interpolate import griddata, make_interp_spline
 from tqdm import tqdm
 
-def load_sar_band(sar_file_path, calibration_path):
+def load_sar_band(sar_file_path, calibration_path, downsample_factor = 10):
     """
     Load GeoTIFF bands and convert raw digital numbers to decibels for normalization.
     """
     with rasterio.open(sar_file_path) as dataset:
         if dataset.count > 1:
              raise ValueError("The band must be single channel, but the dataset has multiple bands.")
-        data = dataset.read(1).astype(np.float64)
+        
+        native_height, native_width = dataset.height, dataset.width 
+        out_height = native_height // downsample_factor
+        out_width = native_width // downsample_factor
+
+        # read a downsampled view of the array (called a decimated array)
+        data = dataset.read(
+            1, out_shape=(out_height, out_width), resampling=rasterio.enums.Resampling.average
+        ).astype(np.float64)
         gcps, gcp_crs = dataset.gcps
 
         # Calibrate to sigma-naught before orthorectification
-        data = calibrate_to_sigma(data, calibration_path)
+        data = calibrate_to_sigma(data, calibration_path, native_height, native_width, downsample_factor)
 
         if gcps: 
-            data, transform, crs = orthorectify(data, gcps, gcp_crs)
+            # rescale row/col to match the decimated array's coord space before orthorectification
+            scaled_gcps = [
+                GroundControlPoint(row = g.row / downsample_factor, col = g.col / downsample_factor, 
+                                   x = g.x, y = g.y, z = g.z, id = g.id)
+                for g in gcps
+            ]
+            data, transform, crs = orthorectify(data, scaled_gcps, gcp_crs)
         else: 
-            transform = dataset.transform
+            transform = dataset.transform * dataset.transform.scale(downsample_factor, downsample_factor)
             crs = dataset.crs
-        
-        # downsample for testing
-        data = data[::10, ::10]
-        transform = transform * transform.scale(10, 10)
         
     return data, transform, crs
 
@@ -54,29 +65,32 @@ def parse_calibration_lut(calibration_path, field="sigmaNought"):
     ])
     return lines, pixels, values 
 
-def interpolate_calibration_lut(lines, pixels, values, shape):
+def interpolate_calibration_lut(lines, pixels, values, native_shape, downsample_factor):
     """
-    Interpolate the sparse calibration LUT onto the full native resolution pixel grid using bilinear interpolation.
+    Interpolate the sparse calibration LUT onto the downsampled pixel grid using bilinear interpolation.
     """
-    n_rows, n_cols = shape
+    native_n_rows, native_n_cols = native_shape
+    out_n_rows = native_n_rows // downsample_factor
+    out_n_cols = native_n_cols // downsample_factor
 
     # interpolate along the pixel (column) axis, once per sparse
-    col_targets = np.arange(n_cols)
-    dense_cols = np.empty((len(lines), n_cols), dtype=np.float64)
+    col_targets = np.arange(out_n_cols) * downsample_factor
+    dense_cols = np.empty((len(lines), out_n_cols), dtype=np.float64)
     for i in range(len(lines)):
         dense_cols[i] = np.interp(col_targets, pixels, values[i])
         
     # interpolate along the line (row) axis, vectorized across
-    row_targets = np.arange(n_rows)
+    row_targets = np.arange(out_n_rows) * downsample_factor
     row_interpolator = make_interp_spline(lines, dense_cols, k=1, axis=0)
     return row_interpolator(row_targets)
 
-def calibrate_to_sigma(dn_data, calibration_path):
+def calibrate_to_sigma(dn_data, calibration_path, native_height, native_width, downsample_factor):
     """
-    Converts raw digital numbers to calibrated sigma-naught using the Sentinel-1 calibration LUT (DN^2 / A^2).
+    Converts raw digital numbers to calibrated sigma-naught using the Sentinel-1 calibration LUT (DN^2 / A^2),
+    sampled at the same downsampled grid as dn_data.
     """
     lines, pixels, sigma_naught_lut = parse_calibration_lut(calibration_path, field="sigmaNought")
-    a = interpolate_calibration_lut(lines, pixels, sigma_naught_lut, dn_data.shape)
+    a = interpolate_calibration_lut(lines, pixels, sigma_naught_lut, (native_height, native_width), downsample_factor)
     return (dn_data.astype(np.float64) ** 2) / (a ** 2)
 
 def apply_rtc(vh_band, vv_band, transform, target_crs, output_dir, xml_annotation_path, threshold=0.05):
@@ -162,6 +176,8 @@ def get_dem_tile_coords(min_long, min_lat, max_long, max_lat):
                   tile_name, 
                   f"https://copernicus-dem-30m.s3.amazonaws.com/{tile_name}/{tile_name}.tif"
              ))
+
+     print(f"DEM tile grid: {len(lats)} lat rows x {len(longs)} long cols = {len(aws_queries)} tiles requested", flush=True)
 
      print("DEM tile coordinates retrieved.")
 
@@ -260,12 +276,12 @@ def interpolate_incidence_angles(lines, pixels, angles, shape):
     return interpolated_angles.reshape(shape)
 
      
-def load_sentinel1_bands(vh_path, vv_path, vh_cal_path, vv_cal_path, xml_annotation_path, output_dir):
+def load_sentinel1_bands(vh_path, vv_path, vh_cal_path, vv_cal_path, xml_annotation_path, output_dir, downsample_factor=10):
      """
      Loads all bands useful for fire prediction and analysis from a Sentinel-1 scene.
      """
-     vh_band, vh_transform, src_crs = load_sar_band(vh_path, vh_cal_path)
-     vv_band, _, _= load_sar_band(vv_path, vv_cal_path)
+     vh_band, vh_transform, src_crs = load_sar_band(vh_path, vh_cal_path, downsample_factor)
+     vv_band, _, _= load_sar_band(vv_path, vv_cal_path, downsample_factor)
 
      bands = apply_rtc(vh_band, vv_band, vh_transform, src_crs, output_dir, xml_annotation_path)
 

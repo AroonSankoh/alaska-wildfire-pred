@@ -27,14 +27,14 @@ def load_band(file_path, resample_continuous=True, target_shape=None):
         
     return band_array, transform
 
-def calculate_nbr(nir_path, swir_path, scl_path):
+def calculate_nbr(nir_path, swir_path, scl_path, target_shape=None):
      """ 
      Calculate Normalized Burn Ratio (NBR) from NIR and SWIR images.
      Returns NIR and SWIR bands as well to minimize any ineffiency from loading bands multiple times. 
      """
 
      # retrieve bands with compatible resolutions
-     nir_band, nir_transform = load_band(nir_path)
+     nir_band, nir_transform = load_band(nir_path, target_shape=target_shape)
      swir_band, _ = load_band(swir_path, target_shape=nir_band.shape)
      nir_band = nir_band.astype(np.float64)
      swir_band = swir_band.astype(np.float64)
@@ -49,15 +49,15 @@ def calculate_nbr(nir_path, swir_path, scl_path):
      
      return nbr, filtered_nir, filtered_swir, nir_transform
 
-def calculate_ndvi(nir_path, red_path, scl_path):
+def calculate_ndvi(nir_path, red_path, scl_path, target_shape=None):
     """
     Calculate Normalized Difference Vegetation Index from Red and NIR images. 
     Returns NIR and Red bands as well to minimize any ineffiency from loading bands multiple times.
     """
 
     # retrieve bands with compatible resolutions 
-    nir_band, nir_transform = load_band(nir_path)
-    red_band, _ = load_band(red_path)
+    nir_band, nir_transform = load_band(nir_path, target_shape=target_shape)
+    red_band, _ = load_band(red_path, target_shape=nir_band.shape)
     nir_band = nir_band.astype(np.float64)
     red_band = red_band.astype(np.float64)
     filtered_nir = apply_cloud_mask(nir_band, scl_path, nir_band.shape)
@@ -96,14 +96,14 @@ def apply_cloud_mask(band, scl_path, shape):
 
      return filtered_band
 
-def load_sentinel2_bands(red_path, green_path, nir_path, swir_path, scl_path):
+def load_sentinel2_bands(red_path, green_path, nir_path, swir_path, scl_path, target_shape=None):
     """ 
     Loads all bands useful for fire prediction and analysis from a Sentinel-2 scene.
     """
     # retrieve bands by indices, raw bands, and any transformations 
-    nbr, nir_band, swir_band, nir_transform = calculate_nbr(nir_path, swir_path, scl_path)
-    ndvi, _, red_band, _ = calculate_ndvi(nir_path, red_path, scl_path)
-    green_band, _ = load_band(green_path)
+    nbr, nir_band, swir_band, nir_transform = calculate_nbr(nir_path, swir_path, scl_path, target_shape=target_shape)
+    ndvi, _, red_band, _ = calculate_ndvi(nir_path, red_path, scl_path, target_shape=target_shape)
+    green_band, _ = load_band(green_path, target_shape=nir_band.shape)
     green_band = apply_cloud_mask(green_band, scl_path, green_band.shape)
     bands = {
          "indices": {"ndvi": ndvi, "nbr": nbr}, 
