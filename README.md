@@ -21,10 +21,12 @@ wildfire-pred/
 │       └── sentinel2_preprocessor.py
 ├── model/
 │   ├── architecture.py
+│   ├── augmentation.py
 │   └── dataset.py
 ├── notebooks/
 │   └── sentinel2_demo.ipynb
 ├── scripts/
+│   └── build_tile_cache.py
 ├── env.yml
 └── README.md
 ```
@@ -36,12 +38,19 @@ conda env create -f env.yml
 conda activate wildfire-pred
 ```
 
-## Reproduction
-Data was collected over the clear fire in Fairbanks, Alaska (LAT: 64.32, LON: -149.13), which began on June 27 2022. To obtain the same scenes, search "Fairbanks, US" in the Copernicus Browser and zoom to around 50km. Pre-fire scenes are dated May 29 2022 and post-fire scenes are dated Aug 8 2022 for Sentinel-2 and Aug 9 2022 for Sentinel-1. Remember to set the cloud cover filter "MSI" to at least 20% when searching for the correct scene, or else your data will be corrupted. There is currently a tutorial notebook that steps you through how to use the sentinel-2 loader, further tutorials are currently being developed.
+## Included Data Set 
+A full scene includes Sentinel-1 pre and post fire SAFE files, Sentinel-2 pre and post SAFE files, an ERA-5 grib file, and a metadata.json with details of the contents of each asset within the scene.
+Each fire is paired with three controls that match the fires EPA Level III Eco-region of the fire. 125 fires and 375 control scenes collected over seven US states (Alaska, California, Idaho, Montana, Nevada, Oregon, Washington) comprise the full dataset. 
+
+## Usage 
+Once you have identified a dataset for analysis, it is highly recommended to build and cache aggregated tiles before anything else. This way it won't be necessary to repeatedly load and aggregate source data whenever performing model training 
+or infererence. Investigate and edit the global variables within ```scripts/build_tile_cache.py``` to ensure the correct source data is used for tiling.  
+
+*Add similar notes on training and inference scripts once those are complete*
 
 ## TODOs
 Additions (in order of importance) yet to implement include: 
-- Training data collection 
-- Fire Weather Index calculator for ERA5 data (it'd be a very useful performance benchmark)
 - Training and inference scripts
-- Tutorial notebooks for loaders, model training, and hyper-parameter optimization
+- Fire Weather Index calculator for ERA5 data (it'd be a very useful performance benchmark)
+- Test Cases 
+- Documentation

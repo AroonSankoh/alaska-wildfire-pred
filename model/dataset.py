@@ -19,16 +19,27 @@ class dataset(torch.utils.data.Dataset):
                   break
         if valid_tile is None:
               raise ValueError("No valid (non-NaN) tiles exist to initialize the dataset with.")
+        
+        # guard before np.mean could be called on empty slices
+        def _safe_mean(values, label):
+            if len(values) == 0:
+                raise ValueError(
+                f"No non-None values found for '{label}' across the entire dataset. "
+                f"This indicates an upstream bug, like a source failing across the entire dataset."
+            )
+            return np.mean(values)
 
         for key in valid_tile["s1_stats"].keys():
-            self.statistic_means[f"mean_{key}"] = np.mean([tile["s1_stats"][key] for _, tile in self.data_list 
-                                                           if tile["s1_stats"] is not None])
+            values = [tile["s1_stats"][key] for _, tile in self.data_list if tile["s1_stats"] is not None]
+            self.statistic_means[f"mean_{key}"] = _safe_mean(values, f"s1_stats.{key}")
+
         for key in valid_tile["s2_stats"].keys():
-            self.statistic_means[f"mean_{key}"] = np.mean([tile["s2_stats"][key] for _, tile in self.data_list 
-                                                           if tile["s2_stats"] is not None])
+            values = [tile["s2_stats"][key] for _, tile in self.data_list if tile["s2_stats"] is not None]
+            self.statistic_means[f"mean_{key}"] = _safe_mean(values, f"s2_stats.{key}")
+
         for key in valid_tile["era5_stats"].keys():
-            self.statistic_means[f"mean_{key}"] = np.mean([tile["era5_stats"][key] for _, tile in self.data_list 
-                                                           if tile["era5_stats"] is not None])
+            values = [tile["era5_stats"][key] for _, tile in self.data_list if tile["era5_stats"] is not None]
+            self.statistic_means[f"mean_{key}"] = _safe_mean(values, f"era5_stats.{key}")
 
 
     def __getitem__(self, index):

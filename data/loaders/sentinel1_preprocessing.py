@@ -52,6 +52,12 @@ def parse_calibration_lut(calibration_path, field="sigmaNought"):
     root = tree.getroot()
     vectors = root.findall(".//calibrationVector")
 
+    # check that the calibration file has at least two vectors for bilinear interpolation
+    if len(vectors) < 2:
+        raise ValueError(
+            f"Calibration file {calibration_path} has only {len(vectors)} calibration vectors."
+        )
+
     lines = np.array([int(v.find("line").text) for v in vectors])
     pixel_lists = [v.find("pixel").text.split() for v in vectors]
     pixels = np.array([int(p) for p in pixel_lists[0]])
@@ -91,6 +97,10 @@ def calibrate_to_sigma(dn_data, calibration_path, native_height, native_width, d
     """
     lines, pixels, sigma_naught_lut = parse_calibration_lut(calibration_path, field="sigmaNought")
     a = interpolate_calibration_lut(lines, pixels, sigma_naught_lut, (native_height, native_width), downsample_factor)
+    if np.any(a <= 0):
+        n_malformed = int((a <= 0).sum())
+        print(f"WARNING: {n_malformed}/{a.size} calibration values are less than 0 in {calibration_path}. "
+              "The resulting sigma-naught will contain NaN at those pixels.", flush=True)
     return (dn_data.astype(np.float64) ** 2) / (a ** 2)
 
 def apply_rtc(vh_band, vv_band, transform, target_crs, output_dir, xml_annotation_path, threshold=0.05):
@@ -187,10 +197,8 @@ def download_dem_tiles(aws_queries, output_dir):
      """
      Download GLO-30 DEM tiles from the public S3 bucket using requests.
      """
-
      file_paths = []
      os.makedirs(output_dir, exist_ok=True)
-
      for query in tqdm(aws_queries, desc="Downloading DEM tiles."):
          filename = query[0]
          save_path = os.path.join(output_dir, filename + ".tiff")
@@ -199,14 +207,11 @@ def download_dem_tiles(aws_queries, output_dir):
               print(f"The file {filename} already exists.")
          else: 
             # stream file downloads for memory efficiency
-            with requests.get(query[1], stream=True) as response:
-                # raise an exception for 4xx or 5xx errors
+            with requests.get(query[1], stream=True, timeout=30) as response:
                 response.raise_for_status()
-                
                 # open the local file for binary writing
                 with open(save_path, 'wb') as file:
                     for chunk in response.iter_content(chunk_size=8192):
-                        
                         file.write(chunk)
          file_paths.append(save_path)
 
@@ -216,7 +221,6 @@ def prepare_dem(tile_paths, target_transform, target_shape, target_crs):
      """
      Mosaic, reproject, and clip DEM tiles to match the S1 scene grid.
      """
-
      print("Preparing DEM for RTC computation.")
 
      # stitch each individual tile into a continuous raster
@@ -282,6 +286,12 @@ def load_sentinel1_bands(vh_path, vv_path, vh_cal_path, vv_cal_path, xml_annotat
      """
      vh_band, vh_transform, src_crs = load_sar_band(vh_path, vh_cal_path, downsample_factor)
      vv_band, _, _= load_sar_band(vv_path, vv_cal_path, downsample_factor)
+
+     # confirm vh and vv bands are the same shape
+     if vh_band.shape != vv_band.shape:
+         raise ValueError(
+             f"VH band shape: {vh_band.shape} does not match VV band shape: {vv_band.shape}, these must align for RTC."
+         )
 
      bands = apply_rtc(vh_band, vv_band, vh_transform, src_crs, output_dir, xml_annotation_path)
 

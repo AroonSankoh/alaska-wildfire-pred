@@ -17,6 +17,8 @@ class TileAugmenter:
         dropout_p: probability of dropping (NaN-ing) a given stat, to be
                    caught by the existing mean-imputation logic.
         """
+        if seed is None:
+            raise ValueError("TileAugmenter requires an explicit seed for reproducibility.")
         self.feature_stds = feature_stds
         self.noise_scale = noise_scale
         self.mixup_alpha = mixup_alpha

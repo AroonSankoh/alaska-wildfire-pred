@@ -20,6 +20,18 @@ def nullify_nan(stats):
          return None
      else: 
          return stats
+     
+def _assert_consistent_shapes(band_dict, label, expected_size):
+     """
+     Assert every array in Sentinel-1 bands and Sentinel-2 combined bands has the same shape.
+     """
+     for key, val in band_dict.items():
+          if val.size != expected_size:
+               raise ValueError(
+                    f"{label} band '{key}' has {val.size} elements, expected {expected_size}."
+                    f"(shape: {val.shape}), most likely a band was loaded at the wrong target shape upstream."
+               )
+
                 
 def aggregate(sentinel1_data, sentinel2_data, era5_data):
     """
@@ -60,11 +72,13 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
     print("Sentinel-1 and Sentinel-2 pixels vectorized and binned.")
 
     # construct respective dataframes for Sentinel-1 and Sentinel-2 with the vectorized pixels
+    _assert_consistent_shapes(sentinel1_bands, "Sentinel-1", x_indices_s1.size)
     s1_df = pd.DataFrame({'x': x_indices_s1.ravel(), 'y': y_indices_s1.ravel(), 
                           **{k: v.ravel() for k, v in sentinel1_bands.items()}})
     s1_stats = s1_df.groupby(['x', 'y']).agg(['mean', 'std'])
 
     s2_combined = {**sentinel2_bands["filtered_bands"], **sentinel2_bands["indices"]}
+    _assert_consistent_shapes(s2_combined, "Sentinel-2", x_indices_s2.size)
     s2_df = pd.DataFrame({'x': x_indices_s2.ravel(), 'y': y_indices_s2.ravel(), 
                           **{k: v.ravel() for k, v in s2_combined.items()}})
     s2_stats = s2_df.groupby(['x', 'y']).agg(['mean', 'std'])

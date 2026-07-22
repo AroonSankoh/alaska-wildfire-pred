@@ -84,6 +84,12 @@ class WildfireModel(nn.Module):
         Forward propogation call for the full conv-transformer model. 
         Accepts both unbatched or batched inputs.
         """
+        # assert input dimensionality is consistently unbatched or batched
+        if x_spatial.dim() not in (1, 2):
+            raise ValueError(f"X_spatial must be 1D (unbatched) or 2D (batched), got shape: {tuple(x_spatial.shape)}")
+        if x_temporal.dim() not in (1, 2):
+            raise ValueError(f"X_temporal must be 1D (unbatched) or 2D (batched), got shape: {tuple(x_temporal.shape)}")
+        
         if x_spatial.dim() == 1:
             x_spatial = x_spatial.unsqueeze(0) 
         x_spatial = x_spatial.unsqueeze(1)
