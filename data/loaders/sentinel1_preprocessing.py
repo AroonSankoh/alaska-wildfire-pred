@@ -193,6 +193,24 @@ def get_dem_tile_coords(min_long, min_lat, max_long, max_lat):
 
      return aws_queries
             
+def _download_dem_tile(url, save_path):
+     """
+     Returns False instead of raising on a 404 -- GLO-30 only tiles land, so a tile that is open ocean 
+     does not exist in the bucket and should be skipped rather than throw.
+     """
+     try:
+         with requests.get(url, stream=True, timeout=30) as response:
+             response.raise_for_status()
+             with open(save_path, 'wb') as file:
+                 for chunk in response.iter_content(chunk_size=8192):
+                     file.write(chunk)
+         return True
+     except requests.exceptions.HTTPError as e:
+         if e.response is not None and e.response.status_code == 404:
+             print(f"  [ocean] no DEM tile at {url}, skipping (open water, no elevation data expected)")
+             return False
+         raise
+
 def download_dem_tiles(aws_queries, output_dir):
      """
      Download GLO-30 DEM tiles from the public S3 bucket using requests.
@@ -205,15 +223,12 @@ def download_dem_tiles(aws_queries, output_dir):
 
          if os.path.isfile(save_path):
               print(f"The file {filename} already exists.")
-         else: 
-            # stream file downloads for memory efficiency
-            with requests.get(query[1], stream=True, timeout=30) as response:
-                response.raise_for_status()
-                # open the local file for binary writing
-                with open(save_path, 'wb') as file:
-                    for chunk in response.iter_content(chunk_size=8192):
-                        file.write(chunk)
-         file_paths.append(save_path)
+              file_paths.append(save_path)
+         elif _download_dem_tile(query[1], save_path):
+              file_paths.append(save_path)
+
+     if not file_paths:
+         raise ValueError("No DEM tiles could be downloaded, scene bounding box may be entirely over water.")
 
      return file_paths
 
@@ -229,8 +244,9 @@ def prepare_dem(tile_paths, target_transform, target_shape, target_crs):
      for src in sources:
          src.close()
      
-     # reproject the tiles into the source CRS and scale the resolution to match the S1 scene
-     dest_array = np.empty(target_shape, dtype=np.float32)
+     # zero-init (not np.empty) so any gap left by a skipped ocean DEM tile defaults
+     # to sea level rather than leftover uninitialized memory
+     dest_array = np.zeros(target_shape, dtype=np.float32)
      rasterio.warp.reproject(
           source=mosaic[0],
           destination=dest_array, 

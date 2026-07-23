@@ -61,10 +61,22 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
     # assert the bounding boxes of Sentinel-1 and Sentinel-2 fall within ERA5s
     if (np.min(era5_lats) > np.min(sentinel1_lats) or np.max(era5_lats) < np.max(sentinel1_lats)
         or np.min(era5_longs) > np.min(sentinel1_longs) or np.max(era5_longs) < np.max(sentinel1_longs)):
-            raise ValueError("Sentinel-1 coordinate range falls outside ERA5 coordinate range.")
+            raise ValueError(
+                "Sentinel-1 coordinate range falls outside ERA5 coordinate range. "
+                f"S1 lat=[{np.min(sentinel1_lats):.4f}, {np.max(sentinel1_lats):.4f}], "
+                f"lon=[{np.min(sentinel1_longs):.4f}, {np.max(sentinel1_longs):.4f}] vs "
+                f"ERA5 lat=[{np.min(era5_lats):.4f}, {np.max(era5_lats):.4f}], "
+                f"lon=[{np.min(era5_longs):.4f}, {np.max(era5_longs):.4f}]."
+            )
     if (np.min(era5_lats) > np.min(sentinel2_lats) or np.max(era5_lats) < np.max(sentinel2_lats)
         or np.min(era5_longs) > np.min(sentinel2_longs) or np.max(era5_longs) < np.max(sentinel2_longs)):
-            raise ValueError("Sentinel-2 coordinate range falls outside ERA5 coordinate range.")
+            raise ValueError(
+                "Sentinel-2 coordinate range falls outside ERA5 coordinate range. "
+                f"S2 lat=[{np.min(sentinel2_lats):.4f}, {np.max(sentinel2_lats):.4f}], "
+                f"lon=[{np.min(sentinel2_longs):.4f}, {np.max(sentinel2_longs):.4f}] vs "
+                f"ERA5 lat=[{np.min(era5_lats):.4f}, {np.max(era5_lats):.4f}], "
+                f"lon=[{np.min(era5_longs):.4f}, {np.max(era5_longs):.4f}]."
+            )
     
     x_indices_s1, y_indices_s1 = bin_data(sentinel1_lats, sentinel1_longs, era5_lats, era5_longs)
     x_indices_s2, y_indices_s2 = bin_data(sentinel2_lats, sentinel2_longs, era5_lats, era5_longs)
