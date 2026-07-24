@@ -192,7 +192,9 @@ def era5_cutoff_from_key(era5_key):
     match = re.search(r"(\d{8})\.grib$", era5_key)
     if not match:
         raise ValueError(f"Could not find an 8-digit date in ERA5 key: {era5_key}")
-    return pd.to_datetime(match.group(1), format="%Y%m%d") + pd.Timedelta(hours=23, minutes=59, seconds=59)
+    # midnight of the ignition/control date -- the whole day itself is excluded, not just
+    # what comes after it, since we don't know the exact time of day the fire ignited
+    return pd.to_datetime(match.group(1), format="%Y%m%d")
 
 
 def process_scene(metadata_key, scene_prefix, kind, tmp_root):

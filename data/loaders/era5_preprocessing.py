@@ -24,10 +24,10 @@ def load_era5_vars(grib_path, cutoff_datetime=None):
         cutoff = np.datetime64(cutoff_datetime)
         for key, data_array in variables.items():
             time_dim = 'valid_time' if 'valid_time' in data_array.dims else 'time'
-            filtered = data_array.where(data_array[time_dim] <= cutoff, drop=True)
+            filtered = data_array.where(data_array[time_dim] < cutoff, drop=True)
             if filtered.sizes[time_dim] == 0:
                 raise ValueError(
-                    f"No ERA5 timesteps remain for '{key}' at or before cutoff {cutoff_datetime}, meaning"
+                    f"No ERA5 timesteps remain for '{key}' strictly before cutoff {cutoff_datetime}, meaning "
                     f"the downloaded grib may not actually cover the required antecedent window."
                 )
             variables[key] = filtered
