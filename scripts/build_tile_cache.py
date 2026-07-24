@@ -14,6 +14,7 @@ import glob
 import json
 import os
 import pickle
+import re
 import shutil
 import signal
 import sys
@@ -23,6 +24,7 @@ import zipfile
 import rasterio
 
 import boto3
+import pandas as pd
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(REPO_ROOT)
@@ -182,6 +184,17 @@ def _log(scene_id, msg, t0):
     print(f"    [{scene_id}] {msg} ({time.time() - t0:.1f}s elapsed)", flush=True)
 
 
+def era5_cutoff_from_key(era5_key):
+    """
+    Grabs the fire ignition date to use as the cut off date for the antecedent ERA5 grib data.
+    Ensures that no time-series after the ignition date is accidentally included.
+    """
+    match = re.search(r"(\d{8})\.grib$", era5_key)
+    if not match:
+        raise ValueError(f"Could not find an 8-digit date in ERA5 key: {era5_key}")
+    return pd.to_datetime(match.group(1), format="%Y%m%d") + pd.Timedelta(hours=23, minutes=59, seconds=59)
+
+
 def process_scene(metadata_key, scene_prefix, kind, tmp_root):
     """
     Runs one fire or control through the full pipeline: Download and extract S1/S2/ERA5 -> Load Bands -> Aggregate into Tiles.
@@ -219,7 +232,8 @@ def process_scene(metadata_key, scene_prefix, kind, tmp_root):
         s2_data = load_s2_pre(s2_safe_dir)
 
         _log(scene_id, "loading ERA5 vars...", t0)
-        era5_data = load_era5_vars(era5_local)
+        cutoff_datetime = era5_cutoff_from_key(era5_key)
+        era5_data = load_era5_vars(era5_local, cutoff_datetime=cutoff_datetime)
 
         _log(scene_id, "aggregating into tiles...", t0)
         tiles = aggregate(s1_data, s2_data, era5_data)
@@ -262,10 +276,7 @@ def _record_failure(error, failures_log_path):
 
 def cache_path_for(cache_dir, scene_prefix):
     """
-    Mirrors the scene's full S3 prefix under cache_dir instead of flattening to just the
-    last path component -- control_id alone isn't unique (two different fires' controls
-    can land on the same rounded coordinate + date), so the full path is the only thing
-    guaranteed to match S3's own uniqueness.
+    Mirrors the scene's full S3 prefix under cache_dir, implicitly rebuilding the structure of the source dataset.
     """
     return os.path.join(cache_dir, scene_prefix.rstrip("/") + ".pkl")
 

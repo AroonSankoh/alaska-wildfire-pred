@@ -2,9 +2,10 @@ import xarray as xr
 import numpy as np
 import cfgrib
 
-def load_era5_vars(grib_path):
+def load_era5_vars(grib_path, cutoff_datetime=None):
     """
     Loads and returns variables (wind speed/direction, humidity, temperature and precipiation), useful for wildfire pred.
+    The cutoff datetime, if given, drops every timestep strictly after this datetime.
     """
     datasets = cfgrib.open_datasets(grib_path)
 
@@ -19,7 +20,19 @@ def load_era5_vars(grib_path):
 
     variables = {'u10': u_wind_10m, 'v10': v_wind_10m, 'd2m': dewpoint_2m_temp, 't2m': temp_2m, 'tp': total_precipitation}
 
-    return variables 
+    if cutoff_datetime is not None:
+        cutoff = np.datetime64(cutoff_datetime)
+        for key, data_array in variables.items():
+            time_dim = 'valid_time' if 'valid_time' in data_array.dims else 'time'
+            filtered = data_array.where(data_array[time_dim] <= cutoff, drop=True)
+            if filtered.sizes[time_dim] == 0:
+                raise ValueError(
+                    f"No ERA5 timesteps remain for '{key}' at or before cutoff {cutoff_datetime}, meaning"
+                    f"the downloaded grib may not actually cover the required antecedent window."
+                )
+            variables[key] = filtered
+
+    return variables
 
 def calculate_fwi(t2m, d2m, u10, v10, tp):
     """
