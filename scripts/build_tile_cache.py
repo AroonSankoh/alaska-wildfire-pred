@@ -260,13 +260,23 @@ def _record_failure(error, failures_log_path):
         f.write(error + "\n\n")
 
 
+def cache_path_for(cache_dir, scene_prefix):
+    """
+    Mirrors the scene's full S3 prefix under cache_dir instead of flattening to just the
+    last path component -- control_id alone isn't unique (two different fires' controls
+    can land on the same rounded coordinate + date), so the full path is the only thing
+    guaranteed to match S3's own uniqueness.
+    """
+    return os.path.join(cache_dir, scene_prefix.rstrip("/") + ".pkl")
+
+
 def process_and_cache_scene(metadata_key, scene_prefix, kind, args, failures_log_path):
     """
-    Runs one scene through process_scene() and either caches its result to disk (and optionally uploads to S3) or logs 
+    Runs one scene through process_scene() and either caches its result to disk (and optionally uploads to S3) or logs
     the failure. Returns True/False for success/failure, or None if the scene was skipped because it was already cached.
     """
     scene_id = scene_prefix.rstrip("/").rsplit("/", 1)[-1]
-    out_path = os.path.join(args.cache_dir, f"{scene_id}.pkl")
+    out_path = cache_path_for(args.cache_dir, scene_prefix)
 
     if args.skip_existing and os.path.exists(out_path):
         print(f"  [skip] {scene_id} (already cached)")
@@ -282,10 +292,11 @@ def process_and_cache_scene(metadata_key, scene_prefix, kind, args, failures_log
         _record_failure(error, failures_log_path)
         return False
 
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
     with open(out_path, "wb") as f:
         pickle.dump(record, f)
     if args.upload_to_s3:
-        s3.upload_file(out_path, BUCKET_NAME, args.s3_cache_prefix + f"{scene_id}.pkl")
+        s3.upload_file(out_path, BUCKET_NAME, args.s3_cache_prefix + scene_prefix.rstrip("/") + ".pkl")
 
     print(f"  [done] {scene_id} -> {len(record['tiles'])} tiles")
     return True
@@ -293,7 +304,7 @@ def process_and_cache_scene(metadata_key, scene_prefix, kind, args, failures_log
 
 def main():
     """
-    Processes every fire, then every control, and caches each to --cache-dir as {scene_id}.pkl
+    Processes every fire, then every control, and caches each to --cache-dir as full/path/name/{scene_id}.pkl
     Failures are appended to cache_failures.log as they happen for real-time monitoring.
     Safe to re-run with the --skip-existing flag to resume where it left off after an interruption.
     """
