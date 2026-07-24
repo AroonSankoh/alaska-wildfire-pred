@@ -2,6 +2,16 @@ import xarray as xr
 import numpy as np
 import cfgrib
 
+def _find_variable(datasets, var_name):
+    """
+    Search every hypercube by name instead of trusting a fixed dataset index.
+    """
+    for ds in datasets:
+        if var_name in ds.data_vars:
+            return ds[var_name]
+    raise ValueError(f"Could not find variable '{var_name}' in any hypercube of this grib.")
+
+
 def load_era5_vars(grib_path, cutoff_datetime=None):
     """
     Loads and returns variables (wind speed/direction, humidity, temperature and precipiation), useful for wildfire pred.
@@ -9,16 +19,15 @@ def load_era5_vars(grib_path, cutoff_datetime=None):
     """
     datasets = cfgrib.open_datasets(grib_path)
 
-    # total precipitation is organized with forecast initializations and lead times so must be flatted to match the dimensions
-    total_precipitation = datasets[1]['tp'].stack(valid_time=('time', 'step')).dropna('valid_time')
-    # note this leaves the total precipitation with 204 timesteps
-    temp_and_pressure = datasets[0]
-    u_wind_10m = temp_and_pressure['u10']
-    v_wind_10m = temp_and_pressure['v10']
-    dewpoint_2m_temp = temp_and_pressure['d2m']
-    temp_2m = temp_and_pressure['t2m']
-
-    variables = {'u10': u_wind_10m, 'v10': v_wind_10m, 'd2m': dewpoint_2m_temp, 't2m': temp_2m, 'tp': total_precipitation}
+    variables = {}
+    for var_name in ('u10', 'v10', 'd2m', 't2m', 'tp'):
+        data_array = _find_variable(datasets, var_name)
+        # some variables (always tp, occasionally others depending on how CDS bundled this
+        # particular request) carry an unflattened time+step structure -- stack and drop the
+        # resulting NaN padding so every variable ends up with a single real-valued time axis
+        if 'step' in data_array.dims and 'time' in data_array.dims:
+            data_array = data_array.stack(valid_time=('time', 'step')).dropna('valid_time')
+        variables[var_name] = data_array
 
     if cutoff_datetime is not None:
         cutoff = np.datetime64(cutoff_datetime)
