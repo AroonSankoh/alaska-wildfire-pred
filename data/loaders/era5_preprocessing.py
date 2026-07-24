@@ -12,6 +12,17 @@ def _find_variable(datasets, var_name):
     raise ValueError(f"Could not find variable '{var_name}' in any hypercube of this grib.")
 
 
+def _flatten_time_step(data_array):
+    """
+    Computes the actual physically-valid datetime (base time plus
+    forecast lead time) and swaps that in as the 'valid_time' coordinate instead.
+    """
+    data_array = data_array.assign_coords(valid_datetime=data_array['time'] + data_array['step'])
+    stacked = data_array.stack(valid_time=('time', 'step')).dropna('valid_time')
+    stacked = stacked.reset_index('valid_time', drop=True).rename(valid_datetime='valid_time')
+    return stacked
+
+
 def load_era5_vars(grib_path, cutoff_datetime=None):
     """
     Loads and returns variables (wind speed/direction, humidity, temperature and precipiation), useful for wildfire pred.
@@ -23,10 +34,10 @@ def load_era5_vars(grib_path, cutoff_datetime=None):
     for var_name in ('u10', 'v10', 'd2m', 't2m', 'tp'):
         data_array = _find_variable(datasets, var_name)
         # some variables (always tp, occasionally others depending on how CDS bundled this
-        # particular request) carry an unflattened time+step structure -- stack and drop the
-        # resulting NaN padding so every variable ends up with a single real-valued time axis
+        # particular request) carry an unflattened time+step structure that needs flattening
+        # onto a single real-valued time axis before it can be used
         if 'step' in data_array.dims and 'time' in data_array.dims:
-            data_array = data_array.stack(valid_time=('time', 'step')).dropna('valid_time')
+            data_array = _flatten_time_step(data_array)
         variables[var_name] = data_array
 
     if cutoff_datetime is not None:
