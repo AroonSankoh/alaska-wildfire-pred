@@ -27,7 +27,13 @@ class dataset(torch.utils.data.Dataset):
                 f"No non-None values found for '{label}' across the entire dataset. "
                 f"This indicates an upstream bug, like a source failing across the entire dataset."
             )
-            return np.mean(values)
+            mean = np.nanmean(values)
+            if np.isnan(mean):
+                raise ValueError(
+                    f"All values for '{label}' are NaN across the entire dataset -- "
+                    f"cannot compute an imputation mean."
+                )
+            return float(mean)
 
         for key in valid_tile["s1_stats"].keys():
             values = [tile["s1_stats"][key] for _, tile in self.data_list if tile["s1_stats"] is not None]
@@ -49,28 +55,31 @@ class dataset(torch.utils.data.Dataset):
         _ , tile = self.data_list[index]
 
         s1_keys = ['vh_band_mean', 'vh_band_std', 'vv_band_mean', 'vv_band_std']
-        s2_keys = ['red_mean', 'red_std', 'green_mean', 'green_std', 'nir_mean', 'nir_std', 'swir_mean', 
+        s2_keys = ['red_mean', 'red_std', 'green_mean', 'green_std', 'nir_mean', 'nir_std', 'swir_mean',
                    'swir_std', 'ndvi_mean', 'ndvi_std', 'nbr_mean', 'nbr_std']
         era5_keys = ['u10', 'v10', 'd2m', 't2m', 'tp']
+
+        def _is_missing(value):
+            return value is None or (isinstance(value, float) and np.isnan(value))
 
         # mean imputation for Sentinel-1, Sentinel-2, and ERA5
         if tile["s1_stats"] is None:
                 tile["s1_stats"] = dict.fromkeys(s1_keys)
-        for key in s1_keys:     
-            if tile["s1_stats"][key] is None:
-                tile["s1_stats"][key] = self.statistic_means[f"mean_{key}"]       
-        
+        for key in s1_keys:
+            if _is_missing(tile["s1_stats"][key]):
+                tile["s1_stats"][key] = self.statistic_means[f"mean_{key}"]
+
         if tile["s2_stats"] is None:
                 tile["s2_stats"] = dict.fromkeys(s2_keys)
-        for key in s2_keys:     
-            if tile["s2_stats"][key] is None:
-                tile["s2_stats"][key] = self.statistic_means[f"mean_{key}"] 
-        
+        for key in s2_keys:
+            if _is_missing(tile["s2_stats"][key]):
+                tile["s2_stats"][key] = self.statistic_means[f"mean_{key}"]
+
         if tile["era5_stats"] is None:
                 tile["era5_stats"] = dict.fromkeys(era5_keys)
-        for key in era5_keys:     
-            if tile["era5_stats"][key] is None:
-                tile["era5_stats"][key] = self.statistic_means[f"mean_{key}"] 
+        for key in era5_keys:
+            if _is_missing(tile["era5_stats"][key]):
+                tile["era5_stats"][key] = self.statistic_means[f"mean_{key}"]
 
         # flatten and concatenate the sentinel statistics into a single vector
         s1_flattened = flatten_stats(tile["s1_stats"] or {})
