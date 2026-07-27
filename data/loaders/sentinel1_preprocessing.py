@@ -99,9 +99,12 @@ def calibrate_to_sigma(dn_data, calibration_path, native_height, native_width, d
     a = interpolate_calibration_lut(lines, pixels, sigma_naught_lut, (native_height, native_width), downsample_factor)
     if np.any(a <= 0):
         n_malformed = int((a <= 0).sum())
-        print(f"WARNING: {n_malformed}/{a.size} calibration values are less than 0 in {calibration_path}. "
-              "The resulting sigma-naught will contain NaN at those pixels.", flush=True)
-    return (dn_data.astype(np.float64) ** 2) / (a ** 2)
+        print(f"WARNING: {n_malformed}/{a.size} calibration values are less than or equal to 0 in "
+              f"{calibration_path}. The resulting sigma-naught will contain NaN at those pixels.", flush=True)
+    # a == 0 would otherwise silently divide into +Inf rather than NaN so explicitly route it to NaN so it can caught by later on 
+    sigma_naught = np.full(dn_data.shape, np.nan, dtype=np.float64)
+    np.divide(dn_data.astype(np.float64) ** 2, a ** 2, out=sigma_naught, where=a != 0)
+    return sigma_naught
 
 def apply_rtc(vh_band, vv_band, transform, target_crs, output_dir, xml_annotation_path, threshold=0.05):
      """

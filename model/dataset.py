@@ -27,13 +27,13 @@ class dataset(torch.utils.data.Dataset):
                 f"No non-None values found for '{label}' across the entire dataset. "
                 f"This indicates an upstream bug, like a source failing across the entire dataset."
             )
-            mean = np.nanmean(values)
-            if np.isnan(mean):
+            finite_values = [v for v in values if np.isfinite(v)]
+            if len(finite_values) == 0:
                 raise ValueError(
-                    f"All values for '{label}' are NaN across the entire dataset -- "
+                    f"All values for '{label}' are NaN/Inf across the entire dataset -- "
                     f"cannot compute an imputation mean."
                 )
-            return float(mean)
+            return float(np.mean(finite_values))
 
         for key in valid_tile["s1_stats"].keys():
             values = [tile["s1_stats"][key] for _, tile in self.data_list if tile["s1_stats"] is not None]
@@ -60,7 +60,8 @@ class dataset(torch.utils.data.Dataset):
         era5_keys = ['u10', 'v10', 'd2m', 't2m', 'tp']
 
         def _is_missing(value):
-            return value is None or (isinstance(value, float) and np.isnan(value))
+            # also catches Inf (e.g. a divide-by-zero further upstream), not just NaN
+            return value is None or (isinstance(value, float) and not np.isfinite(value))
 
         # mean imputation for Sentinel-1, Sentinel-2, and ERA5
         if tile["s1_stats"] is None:

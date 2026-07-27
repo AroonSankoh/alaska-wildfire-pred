@@ -16,9 +16,10 @@ def nullify_nan(stats):
      """
      Check if pixels for Sentinel-1 or Sentinel-2 were masked, if so set their dict to None.
      """
-     if stats is None or all(np.isnan(v) for v in stats.values()):
+     # also treat Inf (e.g. a divide-by-zero further upstream) the same as NaN here
+     if stats is None or all(not np.isfinite(v) for v in stats.values()):
          return None
-     else: 
+     else:
          return stats
      
 def _assert_consistent_shapes(band_dict, label, expected_size):
