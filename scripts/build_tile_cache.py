@@ -243,7 +243,7 @@ def process_scene(metadata_key, scene_prefix, kind, tmp_root):
 
         label = 1.0 if kind == "fire" else 0.0
         record = {
-            "scene_id": scene_id,
+            "scene_id": scene_prefix.rstrip("/"),
             "kind": kind,
             "label": label,
             "fire_name": meta.get("fire_name"),
