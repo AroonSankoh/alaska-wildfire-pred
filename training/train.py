@@ -278,7 +278,7 @@ def main():
     test_loader = torch.utils.data.DataLoader(
         test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
-    best_val_loss = float("inf")
+    best_val_balanced_acc = float("-inf")
     best_path = os.path.join(run_dir, "best_model.pt")
     train_losses, val_losses = [], []
 
@@ -293,9 +293,14 @@ def main():
         train_losses.append(train_metrics["loss"])
         val_losses.append(val_metrics["loss"])
         val_loss = val_metrics["loss"]
+        val_balanced_acc = val_metrics["balanced_acc"]
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        # select on balanced accuracy, not val loss -- with class-weighted BCE the two don't
+        # track each other (loss can keep dropping from confidence on the majority class while
+        # balanced accuracy, the metric that actually matters given the 3:1 imbalance, doesn't
+        # improve), so picking the lowest-loss epoch was picking the wrong checkpoint
+        if val_balanced_acc > best_val_balanced_acc:
+            best_val_balanced_acc = val_balanced_acc
             torch.save({"model_state_dict": model.state_dict(),
                         "spatial_input_dim": x_spatial0.shape[0],
                         "temporal_input_dim": x_temporal0.shape[0],
@@ -303,15 +308,18 @@ def main():
                         "n_layers": args.n_layers,
                         "n_head": args.n_head,
                         "epoch": epoch,
-                        "val_loss": val_loss}, best_path)
-            print(f"  -> new best (val loss {val_loss:.4f}), saved to {best_path}")
+                        "val_loss": val_loss,
+                        "val_balanced_acc": val_balanced_acc}, best_path)
+            print(f"  -> new best (val bal_acc {val_balanced_acc:.4f}, val loss {val_loss:.4f}), "
+                  f"saved to {best_path}")
 
-    # evaluate on the best-val-loss checkpoint, not whatever model holds after the last epoch
+    # evaluate on the best-val-balanced-accuracy checkpoint, not whatever model holds after the last epoch
     best_checkpoint = torch.load(best_path, map_location=device)
     best_model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0],
                                 args.embedding_dim, args.n_layers, args.n_head).to(device)
     best_model.load_state_dict(best_checkpoint["model_state_dict"])
     print(f"Loaded best checkpoint (epoch {best_checkpoint['epoch']}, "
+          f"val bal_acc {best_checkpoint['val_balanced_acc']:.4f}, "
           f"val loss {best_checkpoint['val_loss']:.4f}) for final test evaluation")
 
     test_metrics = run_epoch(best_model, test_loader, optimizer, pos_weight, train=False, device=device)

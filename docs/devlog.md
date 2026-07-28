@@ -533,5 +533,36 @@ metrics from turning into an unreadable positional-tuple return; updated the thr
 in `main()` accordingly. The per-epoch and final-test print lines now report val bal_acc /
 precision / recall / f1 alongside the existing loss/acc (train metrics still print loss/acc
 only, to keep the line from getting too long — bal_acc etc. are the ones that actually needed
-fixing). Not yet re-run with these — next step is rerunning and reading the balanced-accuracy
-trend instead of plain accuracy to judge whether the model is really learning.
+fixing).
+
+## Second run with balanced accuracy visible - not overfitting, just weak - 07/28/26
+
+Rerun with the new metrics live: val balanced accuracy sits in a 0.54-0.60 band across all 20
+epochs (final test: 0.595), against a 0.50 floor for random guessing. So the model is
+extracting *some* real signal — meaningfully better than chance, and recall on the fire class
+gets as high as 0.65-0.74 in several epochs, which the old collapsed model could never
+produce — but 0.55-0.60 balanced accuracy is weak, not something to trust operationally yet.
+Both train and val loss plateau early and stay flat rather than diverging, which rules out
+overfitting as the explanation; this looks like the model converging to a weak local optimum
+and getting stuck there.
+
+Also noticed while reading this run: val loss and val balanced accuracy don't track each
+other. Epoch 15 had the best val loss (0.9870) but a mediocre bal_acc (0.560); epoch 17 had
+worse val loss (1.0290) but the best bal_acc of the whole run (0.575). Since loss and the
+metric that actually matters given the 3:1 imbalance have diverged, selecting `best_model.pt`
+by lowest val loss was picking a systematically different (and probably worse, by the metric
+that matters) checkpoint than selecting by val balanced accuracy would.
+
+## Checkpoint selection: val loss -> val balanced accuracy - 07/28/26
+
+Fixed the mismatch above directly: `main()`'s checkpoint-selection loop now tracks
+`best_val_balanced_acc` (`float("-inf")` init) and saves `best_model.pt` whenever a new epoch
+beats it, instead of comparing on `val_loss`. The checkpoint dict now stores both
+`val_balanced_acc` and `val_loss` for reference, and the "Loaded best checkpoint" print at
+final-test time reports both too, so it's still possible to see what the val loss was for the
+selected epoch even though it's no longer the selection criterion.
+
+Next step: rerun once more to confirm this doesn't just relocate the same weak-signal problem
+to a different epoch, then move on to the hyperparameter sweep script (also considering the
+temporal transformer's undersized `d_model=5` bottleneck as something worth including, not
+just standard training hyperparameters like lr/batch size/epochs).
