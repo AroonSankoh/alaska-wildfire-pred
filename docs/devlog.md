@@ -566,3 +566,66 @@ Next step: rerun once more to confirm this doesn't just relocate the same weak-s
 to a different epoch, then move on to the hyperparameter sweep script (also considering the
 temporal transformer's undersized `d_model=5` bottleneck as something worth including, not
 just standard training hyperparameters like lr/batch size/epochs).
+
+## Rerun with fixed checkpoint selection: mechanically correct, ceiling unchanged - 07/28/26
+
+Reran with the fix above. Confirmed epoch 12 (bal_acc 0.5663) was genuinely the highest val
+balanced accuracy of the whole run — the selection logic is doing what it's supposed to.
+But final test balanced accuracy (0.591) landed within noise of the previous run's (0.595),
+which is expected: checkpoint selection only decides *which* epoch's weights you keep, it
+can't raise a run's ceiling. Two clean runs now show the same weak-signal plateau (val
+balanced accuracy stuck in a 0.54-0.60 band) regardless of which epoch gets picked, which is
+the actual signal that it's time for the hyperparameter sweep rather than more single-config
+runs.
+
+## Widened temporal transformer + hyperparameter sweep script - 07/28/26
+
+Before building the sweep, added a real architecture fix rather than just sweeping around the
+existing bottleneck: `TransformerEncoder` in `model/architecture.py` had no input projection,
+so its internal `d_model` was hard-tied to `temporal_input_dim` — just 5 (the raw ERA5
+variables: u10, v10, d2m, t2m, tp). A 5-dimensional attention space is very little room for a
+transformer to represent anything in. Added `self.input_proj = nn.Linear(input_dim,
+hidden_dim)` ahead of the transformer layers, so the internal width is now a separate,
+tunable `hidden_dim` (renamed the constructor's positional args accordingly). `WildfireModel`
+gained a new `temporal_hidden_dim` param (default `32`) plumbed through, plus explicit
+`ValueError`s if `embedding_dim` or `temporal_hidden_dim` aren't divisible by `n_head` (both
+feed `nn.MultiheadAttention`/`nn.TransformerEncoderLayer`, which require that and otherwise
+fail with a much less obvious error).
+
+Worth flagging honestly, since it affects how much to expect from this fix: widening
+`d_model` does NOT fix a deeper issue I noticed while making this change. `x_temporal` going
+into the transformer is a single flat vector per tile (the ERA5 stats are already
+mean-aggregated over the whole antecedent window in `zonal_aggregator.py`, not preserved as a
+real multi-timestep sequence), and `TransformerEncoder.forward` feeds it in as
+`X.unsqueeze(0)` — a sequence of length 1. Self-attention over a single token is a no-op (one
+token can only attend to itself), so the "attention" in the temporal encoder isn't
+contributing anything beyond the linear/FFN sublayers regardless of `d_model`. Properly
+fixing that would mean preserving the ERA5 time series as actual separate sequence positions
+upstream (a real pipeline change, not just a hyperparameter or a small architecture tweak) —
+noted here as a candidate for later, not implemented now.
+
+To support the sweep without re-reading `tile_cache/` from disk on every trial, refactored
+`training/train.py`: pulled dataset construction out of `main()` into `build_datasets()`
+(returns the three `LabeledTileDataset` splits plus scene/tile counts and `pos_weight_value`),
+and pulled the epoch loop out into `train_model()` (returns the best-val-balanced-accuracy
+state dict in memory via `copy.deepcopy`, rather than round-tripping through disk on every
+improving epoch the way `main()` used to). `main()` now just calls both and handles
+argparse/checkpoint-saving/plotting — same behavior as before, verified by re-reading the
+full diff line by line since this touched nearly the whole file. Added `--weight-decay`
+(default `0.0`, passed straight to `Adam`) and `--temporal-hidden-dim` (default `32`) CLI
+args as part of this.
+
+New `scripts/hyperparameter_sweep.py`: random search using `build_datasets()`/`train_model()`
+directly (dataset built once, reused across every trial). Searches `lr` (log-uniform,
+1e-4 to 1e-2), `batch_size`, `embedding_dim`, `temporal_hidden_dim`, `n_layers`, `n_head`, and
+`weight_decay`. `embedding_dim`/`temporal_hidden_dim` candidate sets were deliberately chosen
+as multiples of every candidate `n_head` value, so every sampled combination is valid by
+construction — no divisibility-rejection/retry logic needed. Each trial trains a short run
+(`--trial-epochs`, default 8) rather than a full one, scored on val balanced accuracy for
+consistency with the checkpoint-selection metric. Writes every trial's config + result to
+`sweeps/sweep_results.json`, prints the top 5 by val balanced accuracy, and prints a ready-to
+-run `train.py` command for the winning config — deliberately does NOT auto-retrain the
+winner at full length, so there's a chance to sanity-check the winning config before
+committing a longer run to it.
+
+Not yet run — next step is actually kicking off the sweep on EC2.

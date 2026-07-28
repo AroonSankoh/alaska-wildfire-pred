@@ -39,15 +39,20 @@ class TransformerEncoder(nn.Module):
     The core temporal encoder of the hybrid wildfire detection model.
     """
 
-    def __init__(self, input_dim, embedding_dim, n_head, num_layers):
+    def __init__(self, input_dim, hidden_dim, embedding_dim, n_head, num_layers):
         """
-        Initialization function that initializes transformer layers according to the 
-        input dimension, output (embedding) dimension, number of attention heads, and number of layers.
+        Initialization function that initializes transformer layers according to the
+        input dimension, internal transformer width (hidden_dim), output (embedding)
+        dimension, number of attention heads, and number of layers.
         """
         super().__init__()
-        self.trans_layer = nn.TransformerEncoderLayer(d_model=input_dim, nhead=n_head)
+        # projects the raw input (e.g. 5 ERA5 variables) up to hidden_dim before the
+        # transformer -- without this, d_model was tied directly to input_dim, so with
+        # only 5 raw features the transformer had almost no representational room
+        self.input_proj = nn.Linear(input_dim, hidden_dim)
+        self.trans_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=n_head)
         self.trans_encoder = nn.TransformerEncoder(self.trans_layer, num_layers=num_layers)
-        self.linear = nn.Linear(input_dim, embedding_dim)
+        self.linear = nn.Linear(hidden_dim, embedding_dim)
 
     def forward(self, X):
         """
@@ -56,6 +61,7 @@ class TransformerEncoder(nn.Module):
         """
         if X.dim() == 1:
             X = X.unsqueeze(0)
+        X = self.input_proj(X)
         X = self.trans_encoder(X.unsqueeze(0))
         # collapse sequence dimension by taking the mean
         X = X.mean(0)
@@ -67,13 +73,17 @@ class WildfireModel(nn.Module):
     The wildfire detection model which fuses the results from both encoders into a 
     multi-head output that describes risk over multiple time horizons.
     """
-    def __init__(self, spatial_input_dim, temporal_input_dim, embedding_dim, n_layers, n_head=8):
+    def __init__(self, spatial_input_dim, temporal_input_dim, embedding_dim, n_layers, n_head=8, temporal_hidden_dim=32):
         """
         Initialization function that initializes a hybrid conv-transformer wildfire prediction model.
         """
         super().__init__();
+        if embedding_dim % n_head != 0:
+            raise ValueError(f"embedding_dim ({embedding_dim}) must be divisible by n_head ({n_head}).")
+        if temporal_hidden_dim % n_head != 0:
+            raise ValueError(f"temporal_hidden_dim ({temporal_hidden_dim}) must be divisible by n_head ({n_head}).")
         self.spatial_encoder = CNNEncoder(spatial_input_dim, embedding_dim)
-        self.temporal_encoder = TransformerEncoder(temporal_input_dim, embedding_dim, n_head, n_layers)
+        self.temporal_encoder = TransformerEncoder(temporal_input_dim, temporal_hidden_dim, embedding_dim, n_head, n_layers)
         self.attention = nn.MultiheadAttention(embedding_dim, n_head)
         self.head_1month = nn.Linear(embedding_dim * 2, 1)
         self.head_3month = nn.Linear(embedding_dim * 2, 1) 

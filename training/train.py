@@ -13,11 +13,17 @@ Labels: fire tiles get label 1.0, control tiles get label 0.0 (uniformly
 across all three 1mo/3mo/6mo heads, per your call on this). If you later get
 real per-horizon ground truth, swap the target-building logic in run_epoch().
 
+build_datasets() and train_model() are also imported directly by
+scripts/hyperparameter_sweep.py, so the dataset only gets built once and
+reused across every trial instead of re-reading tile_cache/ from disk
+each time.
+
 Usage:
     python train.py --cache-dir tile_cache --epochs 20 --batch-size 32
 """
 
 import argparse
+import copy
 import glob
 import os
 import pickle
@@ -106,7 +112,7 @@ def merge_tiles(records):
 
 
 def _safe_std(vals):
-    # falls back to 1.0 both when there's too little data to compute a real std 
+    # falls back to 1.0 both when there's too little data to compute a real std
     if len(vals) <= 1:
         return 1.0
     std_val = float(np.std(vals))
@@ -132,6 +138,56 @@ def build_feature_stds(train_tiles):
                 if t["era5_stats"] is not None and not is_missing_value(t["era5_stats"][key])]
         stds[key] = _safe_std(vals)
     return stds
+
+
+def build_datasets(cache_dir, val_frac, test_frac, seed):
+    """
+    Loads tile_cache/, splits by fire group, and builds the three
+    LabeledTileDataset splits plus the train-split-only class weighting.
+    """
+    records = load_records(cache_dir)
+    groups = group_by_fire(records)
+    train_records, val_records, test_records = split_groups(groups, val_frac, test_frac, seed)
+
+    train_tiles, train_labels = merge_tiles(train_records)
+    val_tiles, val_labels = merge_tiles(val_records)
+    test_tiles, test_labels = merge_tiles(test_records)
+
+    # feature_stds computed on TRAIN split only, to avoid val/test leakage into augmentation scale
+    train_ds_unaugmented = WildfireDataset(train_tiles)
+    feature_stds = build_feature_stds(train_tiles)
+    augmenter = TileAugmenter(feature_stds, seed=seed)
+
+    # normalization stats, which are also train-split-only, applied identically to train/val/test
+    spatial_mean = torch.tensor([train_ds_unaugmented.statistic_means[f"mean_{k}"] for k in SPATIAL_KEYS]).float()
+    spatial_std = torch.tensor([feature_stds[k] for k in SPATIAL_KEYS]).float()
+    temporal_mean = torch.tensor([train_ds_unaugmented.statistic_means[f"mean_{k}"] for k in TEMPORAL_KEYS]).float()
+    temporal_std = torch.tensor([feature_stds[k] for k in TEMPORAL_KEYS]).float()
+
+    train_ds = LabeledTileDataset(train_tiles, train_labels, spatial_mean, spatial_std,
+                                   temporal_mean, temporal_std, augmenter=augmenter)
+    val_ds = LabeledTileDataset(val_tiles, val_labels, spatial_mean, spatial_std,
+                                 temporal_mean, temporal_std, augmenter=None)
+    test_ds = LabeledTileDataset(test_tiles, test_labels, spatial_mean, spatial_std,
+                                  temporal_mean, temporal_std, augmenter=None)
+
+    # class weighting for BCE: weight the minority (fire) class by n_neg/n_pos on the train split
+    n_pos = sum(train_labels)
+    n_neg = len(train_labels) - n_pos
+    pos_weight_value = (n_neg / n_pos) if n_pos > 0 else 1.0
+
+    return {
+        "train_ds": train_ds,
+        "val_ds": val_ds,
+        "test_ds": test_ds,
+        "n_records": len(records),
+        "n_fire": sum(1 for r in records if r["kind"] == "fire"),
+        "n_control": sum(1 for r in records if r["kind"] == "control"),
+        "n_train_scenes": len(train_records),
+        "n_val_scenes": len(val_records),
+        "n_test_scenes": len(test_records),
+        "pos_weight_value": pos_weight_value,
+    }
 
 
 def run_epoch(model, loader, optimizer, pos_weight, train, device):
@@ -188,6 +244,49 @@ def run_epoch(model, loader, optimizer, pos_weight, train, device):
     }
 
 
+def train_model(model, train_ds, val_ds, pos_weight, epochs, batch_size, lr, num_workers,
+                 device, weight_decay=0.0, verbose=True):
+    """
+    Runs the train/val loop for `epochs` epochs, tracking the best checkpoint by
+    val balanced accuracy (not val loss -- see the checkpoint-selection devlog entry).
+    Returns (best_state_dict, best_val_metrics, train_losses, val_losses).
+    """
+    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    train_loader = torch.utils.data.DataLoader(
+        train_ds, batch_size=batch_size, shuffle=True, num_workers=num_workers)
+    val_loader = torch.utils.data.DataLoader(
+        val_ds, batch_size=batch_size, shuffle=False, num_workers=num_workers)
+
+    best_val_balanced_acc = float("-inf")
+    best_state_dict = None
+    best_val_metrics = None
+    train_losses, val_losses = [], []
+
+    for epoch in range(1, epochs + 1):
+        train_metrics = run_epoch(model, train_loader, optimizer, pos_weight, train=True, device=device)
+        val_metrics = run_epoch(model, val_loader, optimizer, pos_weight, train=False, device=device)
+        if verbose:
+            print(f"epoch {epoch:3d} | train loss {train_metrics['loss']:.4f} acc {train_metrics['acc']:.3f} "
+                  f"| val loss {val_metrics['loss']:.4f} acc {val_metrics['acc']:.3f} "
+                  f"bal_acc {val_metrics['balanced_acc']:.3f} "
+                  f"precision {val_metrics['precision']:.3f} recall {val_metrics['recall']:.3f} "
+                  f"f1 {val_metrics['f1']:.3f}")
+        train_losses.append(train_metrics["loss"])
+        val_losses.append(val_metrics["loss"])
+
+        # select best model based on balanced accuracy, not val loss
+        if val_metrics["balanced_acc"] > best_val_balanced_acc:
+            best_val_balanced_acc = val_metrics["balanced_acc"]
+            best_state_dict = copy.deepcopy(model.state_dict())
+            best_val_metrics = dict(val_metrics)
+            best_val_metrics["epoch"] = epoch
+            if verbose:
+                print(f"  -> new best (val bal_acc {val_metrics['balanced_acc']:.4f}, "
+                      f"val loss {val_metrics['loss']:.4f})")
+
+    return best_state_dict, best_val_metrics, train_losses, val_losses
+
+
 def plot_loss_curve(train_losses, val_losses, save_path):
     epochs = range(1, len(train_losses) + 1)
     plt.figure()
@@ -211,7 +310,11 @@ def main():
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--num-workers", type=int, default=0)
     parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--weight-decay", type=float, default=0.0)
     parser.add_argument("--embedding-dim", type=int, default=32)
+    parser.add_argument("--temporal-hidden-dim", type=int, default=32,
+                         help="Internal width (d_model) of the temporal transformer, decoupled "
+                              "from the raw 5-variable ERA5 input via an input projection layer.")
     parser.add_argument("--n-layers", type=int, default=2)
     parser.add_argument("--n-head", type=int, default=1)
     parser.add_argument("--val-frac", type=float, default=0.15)
@@ -228,115 +331,63 @@ def main():
     print(f"Using device: {device}")
     print(f"Run directory: {run_dir}")
 
-    records = load_records(args.cache_dir)
-    print(f"Loaded {len(records)} cached scenes ({sum(1 for r in records if r['kind']=='fire')} fires, "
-          f"{sum(1 for r in records if r['kind']=='control')} controls)")
+    data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed)
+    print(f"Loaded {data['n_records']} cached scenes ({data['n_fire']} fires, {data['n_control']} controls)")
+    print(f"Split: {data['n_train_scenes']} train scenes, {data['n_val_scenes']} val scenes, "
+          f"{data['n_test_scenes']} test scenes")
+    print(f"Tiles: {len(data['train_ds'])} train, {len(data['val_ds'])} val, {len(data['test_ds'])} test")
 
-    groups = group_by_fire(records)
-    train_records, val_records, test_records = split_groups(groups, args.val_frac, args.test_frac, args.seed)
-    print(f"Split: {len(train_records)} train scenes, {len(val_records)} val scenes, {len(test_records)} test scenes")
+    pos_weight = torch.tensor(data["pos_weight_value"]).float().to(device)
+    print(f"Class weighting: pos_weight={data['pos_weight_value']:.3f}")
 
-    train_tiles, train_labels = merge_tiles(train_records)
-    val_tiles, val_labels = merge_tiles(val_records)
-    test_tiles, test_labels = merge_tiles(test_records)
+    x_spatial0, x_temporal0, _ = data["train_ds"][0]
+    model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0], args.embedding_dim,
+                           args.n_layers, args.n_head, temporal_hidden_dim=args.temporal_hidden_dim).to(device)
 
-    # feature_stds computed on TRAIN split only, to avoid val/test leakage into augmentation scale
-    train_ds_unaugmented = WildfireDataset(train_tiles)
-    feature_stds = build_feature_stds(train_tiles)
-    augmenter = TileAugmenter(feature_stds, seed=args.seed)
+    best_state_dict, best_val_metrics, train_losses, val_losses = train_model(
+        model, data["train_ds"], data["val_ds"], pos_weight,
+        epochs=args.epochs, batch_size=args.batch_size, lr=args.lr, num_workers=args.num_workers,
+        device=device, weight_decay=args.weight_decay,
+    )
 
-    # normalization stats, which are also train-split-only, applied identically to train/val/test
-    spatial_mean = torch.tensor([train_ds_unaugmented.statistic_means[f"mean_{k}"] for k in SPATIAL_KEYS]).float()
-    spatial_std = torch.tensor([feature_stds[k] for k in SPATIAL_KEYS]).float()
-    temporal_mean = torch.tensor([train_ds_unaugmented.statistic_means[f"mean_{k}"] for k in TEMPORAL_KEYS]).float()
-    temporal_std = torch.tensor([feature_stds[k] for k in TEMPORAL_KEYS]).float()
+    model_config = {
+        "spatial_input_dim": x_spatial0.shape[0],
+        "temporal_input_dim": x_temporal0.shape[0],
+        "embedding_dim": args.embedding_dim,
+        "temporal_hidden_dim": args.temporal_hidden_dim,
+        "n_layers": args.n_layers,
+        "n_head": args.n_head,
+    }
 
-    train_ds = LabeledTileDataset(train_tiles, train_labels, spatial_mean, spatial_std,
-                                   temporal_mean, temporal_std, augmenter=augmenter)
-    val_ds = LabeledTileDataset(val_tiles, val_labels, spatial_mean, spatial_std,
-                                 temporal_mean, temporal_std, augmenter=None)
-    test_ds = LabeledTileDataset(test_tiles, test_labels, spatial_mean, spatial_std,
-                                  temporal_mean, temporal_std, augmenter=None)
-    print(f"Tiles: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test")
-
-    # class weighting for BCE: weight the minority (fire) class by n_neg/n_pos on the train split
-    n_pos = sum(train_labels)
-    n_neg = len(train_labels) - n_pos
-    pos_weight_value = (n_neg / n_pos) if n_pos > 0 else 1.0
-    pos_weight = torch.tensor(pos_weight_value).float().to(device)
-    print(f"Class weighting: {int(n_pos)} fire tiles, {int(n_neg)} control tiles, pos_weight={pos_weight_value:.3f}")
-
-    x_spatial0, x_temporal0, _ = train_ds[0]
-    model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0],
-                           args.embedding_dim, args.n_layers, args.n_head).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-
-    train_loader = torch.utils.data.DataLoader(
-        train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
-    val_loader = torch.utils.data.DataLoader(
-        val_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-    test_loader = torch.utils.data.DataLoader(
-        test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
-
-    best_val_balanced_acc = float("-inf")
     best_path = os.path.join(run_dir, "best_model.pt")
-    train_losses, val_losses = [], []
+    torch.save({"model_state_dict": best_state_dict,
+                **model_config,
+                "epoch": best_val_metrics["epoch"],
+                "val_loss": best_val_metrics["loss"],
+                "val_balanced_acc": best_val_metrics["balanced_acc"]}, best_path)
+    print(f"Saved best checkpoint (epoch {best_val_metrics['epoch']}, "
+          f"val bal_acc {best_val_metrics['balanced_acc']:.4f}, "
+          f"val loss {best_val_metrics['loss']:.4f}) to {best_path}")
 
-    for epoch in range(1, args.epochs + 1):
-        train_metrics = run_epoch(model, train_loader, optimizer, pos_weight, train=True, device=device)
-        val_metrics = run_epoch(model, val_loader, optimizer, pos_weight, train=False, device=device)
-        print(f"epoch {epoch:3d} | train loss {train_metrics['loss']:.4f} acc {train_metrics['acc']:.3f} "
-              f"| val loss {val_metrics['loss']:.4f} acc {val_metrics['acc']:.3f} "
-              f"bal_acc {val_metrics['balanced_acc']:.3f} "
-              f"precision {val_metrics['precision']:.3f} recall {val_metrics['recall']:.3f} "
-              f"f1 {val_metrics['f1']:.3f}")
-        train_losses.append(train_metrics["loss"])
-        val_losses.append(val_metrics["loss"])
-        val_loss = val_metrics["loss"]
-        val_balanced_acc = val_metrics["balanced_acc"]
+    # evaluate on the best-val-balanced-accuracy checkpoint, not whatever `model` holds after
+    # the last epoch (that's what final_model.pt below is for instead)
+    best_model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0], args.embedding_dim,
+                                args.n_layers, args.n_head, temporal_hidden_dim=args.temporal_hidden_dim).to(device)
+    best_model.load_state_dict(best_state_dict)
 
-        # select on balanced accuracy, not val loss -- with class-weighted BCE the two don't
-        # track each other (loss can keep dropping from confidence on the majority class while
-        # balanced accuracy, the metric that actually matters given the 3:1 imbalance, doesn't
-        # improve), so picking the lowest-loss epoch was picking the wrong checkpoint
-        if val_balanced_acc > best_val_balanced_acc:
-            best_val_balanced_acc = val_balanced_acc
-            torch.save({"model_state_dict": model.state_dict(),
-                        "spatial_input_dim": x_spatial0.shape[0],
-                        "temporal_input_dim": x_temporal0.shape[0],
-                        "embedding_dim": args.embedding_dim,
-                        "n_layers": args.n_layers,
-                        "n_head": args.n_head,
-                        "epoch": epoch,
-                        "val_loss": val_loss,
-                        "val_balanced_acc": val_balanced_acc}, best_path)
-            print(f"  -> new best (val bal_acc {val_balanced_acc:.4f}, val loss {val_loss:.4f}), "
-                  f"saved to {best_path}")
-
-    # evaluate on the best-val-balanced-accuracy checkpoint, not whatever model holds after the last epoch
-    best_checkpoint = torch.load(best_path, map_location=device)
-    best_model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0],
-                                args.embedding_dim, args.n_layers, args.n_head).to(device)
-    best_model.load_state_dict(best_checkpoint["model_state_dict"])
-    print(f"Loaded best checkpoint (epoch {best_checkpoint['epoch']}, "
-          f"val bal_acc {best_checkpoint['val_balanced_acc']:.4f}, "
-          f"val loss {best_checkpoint['val_loss']:.4f}) for final test evaluation")
-
-    test_metrics = run_epoch(best_model, test_loader, optimizer, pos_weight, train=False, device=device)
-    test_loss, test_acc = test_metrics["loss"], test_metrics["acc"]
+    test_loader = torch.utils.data.DataLoader(
+        data["test_ds"], batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
+    test_metrics = run_epoch(best_model, test_loader, optimizer=None, pos_weight=pos_weight,
+                              train=False, device=device)
     print(f"\nFinal test | loss {test_metrics['loss']:.4f} acc {test_metrics['acc']:.3f} "
           f"bal_acc {test_metrics['balanced_acc']:.3f} precision {test_metrics['precision']:.3f} "
           f"recall {test_metrics['recall']:.3f} f1 {test_metrics['f1']:.3f}")
 
     final_path = os.path.join(run_dir, "final_model.pt")
     torch.save({"model_state_dict": model.state_dict(),
-                "spatial_input_dim": x_spatial0.shape[0],
-                "temporal_input_dim": x_temporal0.shape[0],
-                "embedding_dim": args.embedding_dim,
-                "n_layers": args.n_layers,
-                "n_head": args.n_head,
-                "test_loss": test_loss,
-                "test_acc": test_acc}, final_path)
+                **model_config,
+                "test_loss": test_metrics["loss"],
+                "test_acc": test_metrics["acc"]}, final_path)
 
     loss_curve_path = os.path.join(run_dir, "loss_curve.png")
     plot_loss_curve(train_losses, val_losses, loss_curve_path)
