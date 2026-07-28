@@ -478,3 +478,60 @@ and `train.py`'s `build_feature_stds()`. `model/__init__.py` now re-exports
 
 Purely a structural move — no behavior change, verified via `py_compile` on all three
 touched files.
+
+## First run with class weighting + normalization - 07/28/26
+
+Reran `train.py` with both fixes live. Loss curve: train loss falls smoothly (0.97 → 0.92),
+val loss stays noisy and roughly flat (0.985-1.035), no longer pinned dead flat at the old
+~0.744 accuracy/~0.56 loss floor — so the class-weighted BCE broke the "always predict
+control" collapse from before. First read of the plot looked like classic overfitting (train
+down, val flat), but the full printout told a different story once accuracy was visible:
+
+```
+epoch   1 | train loss 0.9719 acc 0.626 | val loss 1.0235 acc 0.561
+...
+epoch  12 | train loss 0.9217 acc 0.640 | val loss 0.9902 acc 0.441   (best val loss so far)
+...
+epoch  20 | train loss 0.9164 acc 0.645 | val loss 1.0126 acc 0.524
+Final test | loss 0.9333 acc 0.576
+```
+
+Train accuracy plateaus around 63-65% — itself *below* the naive 75% majority-class
+baseline, and barely moving over 20 epochs. Val accuracy swings wildly (0.44-0.67) with no
+relationship to val loss at all (epoch 12's best-val-loss checkpoint has one of the *worst*
+val accuracies in the whole run). That combination — train not fitting well either, and
+val accuracy decoupled from val loss — doesn't match overfitting (train low/confident, val
+diverging upward); it looks more like plain accuracy no longer being a meaningful metric
+once the loss is class-weighted (a model can trade raw accuracy for lower weighted loss by
+not defaulting to the majority class), plus a still-noisy/weak signal overall. Conclusion:
+not overfitting yet — the more useful next step is tracking a real classification metric
+(precision/recall/F1 or balanced accuracy per class) instead of plain thresholded accuracy,
+since accuracy and the training objective are no longer aligned.
+
+Also fixed a real bug surfaced by this discussion: `main()`'s final test evaluation ran on
+whatever `model` held after the *last* epoch, never on `best_model.pt` (the actual
+best-val-loss checkpoint saved to disk) — so "Final test" was silently reporting the
+last-epoch model's performance, not the best one. Fixed by reloading `best_model.pt`'s state
+dict into a separate `best_model` instance for the final test pass, leaving `model`'s
+last-epoch weights untouched so `final_model.pt` still saves something meaningfully
+different from `best_model.pt`.
+
+## Added balanced accuracy / precision / recall / F1 - 07/28/26
+
+Following directly from the metric-mismatch conclusion above: `run_epoch()` now accumulates
+TP/FP/FN/TN counts (across all 3 horizon heads, same flattening the existing accuracy count
+already did) and returns balanced accuracy, precision, recall, and F1 on the fire (positive)
+class alongside loss/accuracy, instead of just the two. Balanced accuracy is `(recall +
+specificity) / 2` — a single number that isn't inflated by the majority class the way plain
+accuracy is, so it's what I'd actually trust as a headline number given the 3:1 class
+imbalance. Precision/recall/F1 on the fire class are there for a finer-grained read on the
+same question (e.g. whether the model is trading recall for precision or vice versa, which a
+single accuracy or balanced-accuracy number would hide).
+
+`run_epoch()` now returns a dict instead of a `(loss, acc)` tuple to keep the growing set of
+metrics from turning into an unreadable positional-tuple return; updated the three call sites
+in `main()` accordingly. The per-epoch and final-test print lines now report val bal_acc /
+precision / recall / f1 alongside the existing loss/acc (train metrics still print loss/acc
+only, to keep the line from getting too long — bal_acc etc. are the ones that actually needed
+fixing). Not yet re-run with these — next step is rerunning and reading the balanced-accuracy
+trend instead of plain accuracy to judge whether the model is really learning.

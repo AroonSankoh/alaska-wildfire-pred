@@ -140,6 +140,8 @@ def run_epoch(model, loader, optimizer, pos_weight, train, device):
     total_loss = 0.0
     n_correct = 0
     n_tiles = 0
+    # confusion-matrix counts, accumulated across all 3 horizon heads
+    n_tp = n_fp = n_fn = n_tn = 0.0
 
     with torch.set_grad_enabled(train):
         for x_spatial, x_temporal, y in loader:
@@ -151,8 +153,6 @@ def run_epoch(model, loader, optimizer, pos_weight, train, device):
             target = y.unsqueeze(1).expand(-1, 3)                   # same fire/control label applied to all 3 horizons
 
             # class weighting: prevents model from learning lazy logic like "since 3/4 of samples are controls, just predict control for 75% accuracy"
-            # target is only ever exactly 0.0 or 1.0 (built from the label list, no arithmetic in between),
-            # but compare with > 0.5 rather than == 1.0 to avoid a float equality check on principle
             weight = torch.where(target > 0.5, pos_weight, torch.ones_like(target))
             loss = F.binary_cross_entropy(pred, target, weight=weight)
 
@@ -161,11 +161,31 @@ def run_epoch(model, loader, optimizer, pos_weight, train, device):
                 loss.backward()
                 optimizer.step()
 
+            # confusion-matrix statistics
             total_loss += loss.item() * batch_size
-            n_correct += ((pred > 0.5).float() == target).sum().item() / 3.0
+            pred_positive = pred > 0.5
+            target_positive = target > 0.5
+            n_correct += (pred_positive == target_positive).sum().item() / 3.0
+            n_tp += (pred_positive & target_positive).sum().item()
+            n_fp += (pred_positive & ~target_positive).sum().item()
+            n_fn += (~pred_positive & target_positive).sum().item()
+            n_tn += (~pred_positive & ~target_positive).sum().item()
             n_tiles += batch_size
 
-    return total_loss / n_tiles, n_correct / n_tiles
+    precision = n_tp / (n_tp + n_fp) if (n_tp + n_fp) > 0 else 0.0
+    recall = n_tp / (n_tp + n_fn) if (n_tp + n_fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    specificity = n_tn / (n_tn + n_fp) if (n_tn + n_fp) > 0 else 0.0
+    balanced_acc = (recall + specificity) / 2
+
+    return {
+        "loss": total_loss / n_tiles,
+        "acc": n_correct / n_tiles,
+        "balanced_acc": balanced_acc,
+        "precision": precision,
+        "recall": recall,
+        "f1": f1,
+    }
 
 
 def plot_loss_curve(train_losses, val_losses, save_path):
@@ -263,12 +283,16 @@ def main():
     train_losses, val_losses = [], []
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = run_epoch(model, train_loader, optimizer, pos_weight, train=True, device=device)
-        val_loss, val_acc = run_epoch(model, val_loader, optimizer, pos_weight, train=False, device=device)
-        print(f"epoch {epoch:3d} | train loss {train_loss:.4f} acc {train_acc:.3f} "
-              f"| val loss {val_loss:.4f} acc {val_acc:.3f}")
-        train_losses.append(train_loss)
-        val_losses.append(val_loss)
+        train_metrics = run_epoch(model, train_loader, optimizer, pos_weight, train=True, device=device)
+        val_metrics = run_epoch(model, val_loader, optimizer, pos_weight, train=False, device=device)
+        print(f"epoch {epoch:3d} | train loss {train_metrics['loss']:.4f} acc {train_metrics['acc']:.3f} "
+              f"| val loss {val_metrics['loss']:.4f} acc {val_metrics['acc']:.3f} "
+              f"bal_acc {val_metrics['balanced_acc']:.3f} "
+              f"precision {val_metrics['precision']:.3f} recall {val_metrics['recall']:.3f} "
+              f"f1 {val_metrics['f1']:.3f}")
+        train_losses.append(train_metrics["loss"])
+        val_losses.append(val_metrics["loss"])
+        val_loss = val_metrics["loss"]
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -282,8 +306,19 @@ def main():
                         "val_loss": val_loss}, best_path)
             print(f"  -> new best (val loss {val_loss:.4f}), saved to {best_path}")
 
-    test_loss, test_acc = run_epoch(model, test_loader, optimizer, pos_weight, train=False, device=device)
-    print(f"\nFinal test | loss {test_loss:.4f} acc {test_acc:.3f}")
+    # evaluate on the best-val-loss checkpoint, not whatever model holds after the last epoch
+    best_checkpoint = torch.load(best_path, map_location=device)
+    best_model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0],
+                                args.embedding_dim, args.n_layers, args.n_head).to(device)
+    best_model.load_state_dict(best_checkpoint["model_state_dict"])
+    print(f"Loaded best checkpoint (epoch {best_checkpoint['epoch']}, "
+          f"val loss {best_checkpoint['val_loss']:.4f}) for final test evaluation")
+
+    test_metrics = run_epoch(best_model, test_loader, optimizer, pos_weight, train=False, device=device)
+    test_loss, test_acc = test_metrics["loss"], test_metrics["acc"]
+    print(f"\nFinal test | loss {test_metrics['loss']:.4f} acc {test_metrics['acc']:.3f} "
+          f"bal_acc {test_metrics['balanced_acc']:.3f} precision {test_metrics['precision']:.3f} "
+          f"recall {test_metrics['recall']:.3f} f1 {test_metrics['f1']:.3f}")
 
     final_path = os.path.join(run_dir, "final_model.pt")
     torch.save({"model_state_dict": model.state_dict(),
