@@ -402,4 +402,79 @@ entirely. Two concrete, likely-fixable causes identified before touching hyperpa
    precipitation, negative-dB SAR, unit-scale NDVI) with no z-scoring — a well-known way to
    get exactly this kind of "gave up, predicted the mean" collapse.
 
-Not yet implemented — next step once we return to this thread.
+## Class weighting + input normalization - 07/28/26
+
+Implemented both fixes identified above.
+
+**Class weighting**: switched from `nn.BCELoss()` to `F.binary_cross_entropy(pred, target,
+weight=...)` in `run_epoch()`, with a per-batch `weight` tensor built via
+`torch.where(target > 0.5, pos_weight, torch.ones_like(target))`. `pos_weight` itself
+(`n_neg / n_pos`) is computed once in `main()` from the actual per-tile train labels, not
+assumed from the 125/375 scene-level ratio, since different scenes can yield different tile
+counts. This makes getting a fire tile wrong cost proportionally more than getting a control
+tile wrong, closing off the "always predict control" shortcut. Kept `nn.BCELoss`'s sigmoid
+contract in `architecture.py` unchanged (didn't switch to `BCEWithLogitsLoss`) to avoid
+touching the model's output semantics elsewhere.
+
+**Input normalization**: added `spatial_mean`/`spatial_std`/`temporal_mean`/`temporal_std`
+to `LabeledTileDataset`, computed once in `main()` from `train_ds_unaugmented.statistic_means`
+(mean) and `feature_stds` (std) — both already train-split-only, now reused for
+normalization instead of just augmentation. Applied in `__getitem__` as a plain z-score
+(`(x - mean) / std`) *after* `TileAugmenter`'s jitter/dropout, since those operate in raw
+scale (their noise magnitude and imputation values are raw-scale too) — normalizing first
+would have made the jitter noise scale meaningless. Same train-derived stats are reused for
+val/test to avoid leaking their statistics into what the model treats as "normal."
+
+While wiring this up, also hardened `build_feature_stds()`'s fallback: it already defaulted
+to `std=1.0` when there wasn't enough data to compute a real std, but a feature that's
+genuinely constant across the whole train split (real std of exactly `0`) wasn't guarded —
+dividing by that during normalization would silently produce `Inf`, the same class of bug
+fixed in the NaN/Inf entry above. Added `_safe_std()` to catch that case too.
+
+Not yet re-run — next step is rerunning `train.py` and checking whether accuracy actually
+moves off the ~75% floor.
+
+## Cleanup pass on the class-weighting/normalization change - 07/28/26
+
+A few small things caught in review of the change above:
+
+- `build_feature_stds(train_tiles, train_ds)` never actually used `train_ds` — dropped the
+  parameter and updated the one call site.
+- `weight = torch.where(target == 1.0, pos_weight, torch.ones_like(target))` tripped
+  SonarQube's floating-point-equality warning. `target` is only ever exactly `0.0` or `1.0`
+  in practice (built straight from the label list, no arithmetic on it in between), so this
+  was never actually unsafe, but switched to `target > 0.5` anyway to match the threshold
+  style already used for accuracy (`pred > 0.5`) and avoid relying on that guarantee holding
+  forever.
+- Added per-run output directories and a loss-curve plot: each call to `train.py` now creates
+  `checkpoints/{timestamp}/` (via `run_id = datetime.now().strftime(...)`) holding
+  `best_model.pt`, `final_model.pt`, and a new `loss_curve.png` (`plot_loss_curve()`, using
+  `matplotlib` with the `Agg` backend since EC2 has no display to render to). Runs used to
+  overwrite the same `best_model.pt`/`final_model.pt` in a flat `checkpoints/` dir every time,
+  so there was no way to compare or even keep more than one run's output. Also updated the
+  `--upload-to-s3` path to upload under `{s3_model_prefix}{run_id}/` instead of flattening
+  every run's `best_model.pt` to the same S3 key.
+
+## Moved `LabeledTileDataset` into `model/dataset.py` - 07/28/26
+
+`LabeledTileDataset` had been living in `training/train.py`, but it's really a data-layer
+class (wraps `dataset` with labels, augmentation, and normalization) rather than
+training-loop logic, so moved it into `model/dataset.py` alongside `dataset` itself —
+`train.py` should stay focused on the argparse/loop/checkpointing side, and this way it's
+importable for a future eval or inference script without dragging in the rest of the
+training script.
+
+While moving it, also consolidated the duplication this exposed: `train.py` had its own
+copies of `S1_KEYS`/`S2_KEYS`/`ERA5_KEYS` (as module-level constants) and `dataset.py`'s
+`__getitem__` had a *second*, separately hardcoded copy of the same three key lists
+(`s1_keys`/`s2_keys`/`era5_keys`, lowercase, local to the method). Promoted all five key
+lists (`S1_KEYS`, `S2_KEYS`, `ERA5_KEYS`, `SPATIAL_KEYS`, `TEMPORAL_KEYS`) to module-level
+constants in `model/dataset.py`, and pointed both `dataset.__getitem__` and
+`LabeledTileDataset` at the same set — one definition instead of two that had to be kept in
+sync by hand. Also promoted `train.py`'s local `_is_missing()` helper to a shared,
+non-private `is_missing_value()` in `model/dataset.py`, used by both `dataset.__getitem__`
+and `train.py`'s `build_feature_stds()`. `model/__init__.py` now re-exports
+`LabeledTileDataset`, the five key-list constants, and `is_missing_value`.
+
+Purely a structural move — no behavior change, verified via `py_compile` on all three
+touched files.

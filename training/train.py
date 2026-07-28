@@ -23,36 +23,29 @@ import os
 import pickle
 import random
 import sys
+from datetime import datetime
 
 import boto3
+import matplotlib
+matplotlib.use("Agg")  # headless -- EC2 has no display to render to
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import torch.nn as nn
+import torch.nn.functional as F
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(REPO_ROOT)
 
 from model import dataset as WildfireDataset
 from model import WildfireModel
+from model import LabeledTileDataset
+from model import S1_KEYS, S2_KEYS, ERA5_KEYS, SPATIAL_KEYS, TEMPORAL_KEYS
+from model import is_missing_value
 from model.augmentation import TileAugmenter
 
 BUCKET_NAME = "wildfire-scenes-s3-202802195212-eu-central-1-an"
 
-S1_KEYS = ["vh_band_mean", "vh_band_std", "vv_band_mean", "vv_band_std"]
-S2_KEYS = ["red_mean", "red_std", "green_mean", "green_std", "nir_mean", "nir_std",
-           "swir_mean", "swir_std", "ndvi_mean", "ndvi_std", "nbr_mean", "nbr_std"]
-ERA5_KEYS = ["u10", "v10", "d2m", "t2m", "tp"]
-SPATIAL_KEYS = S1_KEYS + S2_KEYS
-TEMPORAL_KEYS = ERA5_KEYS
-
-
-# --------------------------------------------------------------------------
-# Loading cached records + grouping fires with their matched controls
-# --------------------------------------------------------------------------
-
 def load_records(cache_dir):
-    # tile_cache now mirrors the S3 directory structure (fires/{state}/... , controls/{state}/{fire_control}/...)
-    # rather than a flat directory, so this has to walk recursively rather than glob the top level only
     records = []
     for path in sorted(glob.glob(os.path.join(cache_dir, "**", "*.pkl"), recursive=True)):
         with open(path, "rb") as f:
@@ -61,8 +54,10 @@ def load_records(cache_dir):
 
 
 def group_by_fire(records):
-    """Groups each fire with its matched controls so a train/val/test split
-    never puts a fire in one split and its own controls in another."""
+    """
+    Groups each fire with its matched controls so a train/val/test split
+    never puts a fire in one split and its matching controls in another.
+    """
     fires = [r for r in records if r["kind"] == "fire"]
     controls = [r for r in records if r["kind"] == "control"]
 
@@ -96,13 +91,10 @@ def split_groups(groups, val_frac, test_frac, seed):
     flatten = lambda gs: [r for g in gs for r in g]
     return flatten(train_groups), flatten(val_groups), flatten(test_groups)
 
-
-# --------------------------------------------------------------------------
-# Dataset wrapper: merges tiles across scenes, tracks per-tile labels,
-# optionally applies TileAugmenter (train split only)
-# --------------------------------------------------------------------------
-
 def merge_tiles(records):
+    """
+    Merges tiles across scenes and trackes per-tile labels
+    """
     merged_tiles = {}
     labels = []
     for record in records:
@@ -113,66 +105,36 @@ def merge_tiles(records):
     return merged_tiles, labels
 
 
-class LabeledTileDataset(torch.utils.data.Dataset):
-    def __init__(self, tiles, labels, augmenter=None):
-        self.inner = WildfireDataset(tiles)
-        self.labels = labels
-        self.augmenter = augmenter
-        assert len(self.inner) == len(self.labels), \
-            f"tile/label count mismatch: {len(self.inner)} vs {len(self.labels)}"
-
-        if augmenter is not None:
-            self.impute_spatial = torch.tensor(
-                [self.inner.statistic_means[f"mean_{k}"] for k in SPATIAL_KEYS]).float()
-            self.impute_temporal = torch.tensor(
-                [self.inner.statistic_means[f"mean_{k}"] for k in TEMPORAL_KEYS]).float()
-
-    def __len__(self):
-        return len(self.inner)
-
-    def __getitem__(self, idx):
-        x_spatial, x_temporal = self.inner[idx]
-        if self.augmenter is not None:
-            x_spatial, x_temporal = self.augmenter.jitter(x_spatial, x_temporal, SPATIAL_KEYS, TEMPORAL_KEYS)
-            x_spatial, x_temporal = self.augmenter.dropout(
-                x_spatial, x_temporal, self.impute_spatial, self.impute_temporal)
-        y = torch.tensor(self.labels[idx]).float()
-        return x_spatial, x_temporal, y
+def _safe_std(vals):
+    # falls back to 1.0 both when there's too little data to compute a real std 
+    if len(vals) <= 1:
+        return 1.0
+    std_val = float(np.std(vals))
+    return std_val if std_val > 0 else 1.0
 
 
-def _is_missing(value):
-    # mirrors model/dataset.py's _is_missing -- a tile can carry an individual NaN (e.g. a
-    # single-pixel tile's std, undefined under pandas' ddof=1) without its whole stats dict
-    # being None, and an unfiltered NaN poisons np.std() into NaN for the whole feature.
-    # Also catches Inf (e.g. a divide-by-zero further upstream), which would otherwise
-    # poison np.std() into Inf instead.
-    return value is None or (isinstance(value, float) and not np.isfinite(value))
-
-
-def build_feature_stds(train_tiles, train_ds):
-    """Dataset-wide (train-split-only, to avoid val/test leakage) std per
-    feature, same pattern as train_ds.statistic_means but with np.std."""
+def build_feature_stds(train_tiles):
+    """
+    Dataset-wide (train-split-only, to avoid val/test leakage) std per
+    feature, same pattern as train_ds.statistic_means but with np.std.
+    """
     stds = {}
     for key in S1_KEYS:
         vals = [t["s1_stats"][key] for t in train_tiles.values()
-                if t["s1_stats"] is not None and not _is_missing(t["s1_stats"][key])]
-        stds[key] = float(np.std(vals)) if len(vals) > 1 else 1.0
+                if t["s1_stats"] is not None and not is_missing_value(t["s1_stats"][key])]
+        stds[key] = _safe_std(vals)
     for key in S2_KEYS:
         vals = [t["s2_stats"][key] for t in train_tiles.values()
-                if t["s2_stats"] is not None and not _is_missing(t["s2_stats"][key])]
-        stds[key] = float(np.std(vals)) if len(vals) > 1 else 1.0
+                if t["s2_stats"] is not None and not is_missing_value(t["s2_stats"][key])]
+        stds[key] = _safe_std(vals)
     for key in ERA5_KEYS:
         vals = [t["era5_stats"][key] for t in train_tiles.values()
-                if t["era5_stats"] is not None and not _is_missing(t["era5_stats"][key])]
-        stds[key] = float(np.std(vals)) if len(vals) > 1 else 1.0
+                if t["era5_stats"] is not None and not is_missing_value(t["era5_stats"][key])]
+        stds[key] = _safe_std(vals)
     return stds
 
 
-# --------------------------------------------------------------------------
-# Training loop -- real batched forward passes via DataLoader
-# --------------------------------------------------------------------------
-
-def run_epoch(model, loader, optimizer, loss_fn, train, device):
+def run_epoch(model, loader, optimizer, pos_weight, train, device):
     model.train() if train else model.eval()
 
     total_loss = 0.0
@@ -186,8 +148,13 @@ def run_epoch(model, loader, optimizer, loss_fn, train, device):
 
             head1, head2, head3, _ = model(x_spatial, x_temporal)
             pred = torch.cat([head1, head2, head3], dim=1)          # (batch, 3)
-            target = y.unsqueeze(1).expand(-1, 3)                    # same fire/control label applied to all 3 horizons
-            loss = loss_fn(pred, target)
+            target = y.unsqueeze(1).expand(-1, 3)                   # same fire/control label applied to all 3 horizons
+
+            # class weighting: prevents model from learning lazy logic like "since 3/4 of samples are controls, just predict control for 75% accuracy"
+            # target is only ever exactly 0.0 or 1.0 (built from the label list, no arithmetic in between),
+            # but compare with > 0.5 rather than == 1.0 to avoid a float equality check on principle
+            weight = torch.where(target > 0.5, pos_weight, torch.ones_like(target))
+            loss = F.binary_cross_entropy(pred, target, weight=weight)
 
             if train:
                 optimizer.zero_grad()
@@ -199,6 +166,19 @@ def run_epoch(model, loader, optimizer, loss_fn, train, device):
             n_tiles += batch_size
 
     return total_loss / n_tiles, n_correct / n_tiles
+
+
+def plot_loss_curve(train_losses, val_losses, save_path):
+    epochs = range(1, len(train_losses) + 1)
+    plt.figure()
+    plt.plot(epochs, train_losses, label="train loss")
+    plt.plot(epochs, val_losses, label="val loss")
+    plt.xlabel("epoch")
+    plt.ylabel("loss")
+    plt.title("Training and validation loss")
+    plt.legend()
+    plt.savefig(save_path)
+    plt.close()
 
 
 def main():
@@ -219,9 +199,14 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    # each run gets its own timestamped dir under --output-dir, holding the best/final
+    # checkpoints and the loss-curve plot together as one package
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(args.output_dir, run_id)
+    os.makedirs(run_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Run directory: {run_dir}")
 
     records = load_records(args.cache_dir)
     print(f"Loaded {len(records)} cached scenes ({sum(1 for r in records if r['kind']=='fire')} fires, "
@@ -237,19 +222,34 @@ def main():
 
     # feature_stds computed on TRAIN split only, to avoid val/test leakage into augmentation scale
     train_ds_unaugmented = WildfireDataset(train_tiles)
-    feature_stds = build_feature_stds(train_tiles, train_ds_unaugmented)
+    feature_stds = build_feature_stds(train_tiles)
     augmenter = TileAugmenter(feature_stds, seed=args.seed)
 
-    train_ds = LabeledTileDataset(train_tiles, train_labels, augmenter=augmenter)
-    val_ds = LabeledTileDataset(val_tiles, val_labels, augmenter=None)
-    test_ds = LabeledTileDataset(test_tiles, test_labels, augmenter=None)
+    # normalization stats, which are also train-split-only, applied identically to train/val/test
+    spatial_mean = torch.tensor([train_ds_unaugmented.statistic_means[f"mean_{k}"] for k in SPATIAL_KEYS]).float()
+    spatial_std = torch.tensor([feature_stds[k] for k in SPATIAL_KEYS]).float()
+    temporal_mean = torch.tensor([train_ds_unaugmented.statistic_means[f"mean_{k}"] for k in TEMPORAL_KEYS]).float()
+    temporal_std = torch.tensor([feature_stds[k] for k in TEMPORAL_KEYS]).float()
+
+    train_ds = LabeledTileDataset(train_tiles, train_labels, spatial_mean, spatial_std,
+                                   temporal_mean, temporal_std, augmenter=augmenter)
+    val_ds = LabeledTileDataset(val_tiles, val_labels, spatial_mean, spatial_std,
+                                 temporal_mean, temporal_std, augmenter=None)
+    test_ds = LabeledTileDataset(test_tiles, test_labels, spatial_mean, spatial_std,
+                                  temporal_mean, temporal_std, augmenter=None)
     print(f"Tiles: {len(train_ds)} train, {len(val_ds)} val, {len(test_ds)} test")
+
+    # class weighting for BCE: weight the minority (fire) class by n_neg/n_pos on the train split
+    n_pos = sum(train_labels)
+    n_neg = len(train_labels) - n_pos
+    pos_weight_value = (n_neg / n_pos) if n_pos > 0 else 1.0
+    pos_weight = torch.tensor(pos_weight_value).float().to(device)
+    print(f"Class weighting: {int(n_pos)} fire tiles, {int(n_neg)} control tiles, pos_weight={pos_weight_value:.3f}")
 
     x_spatial0, x_temporal0, _ = train_ds[0]
     model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0],
                            args.embedding_dim, args.n_layers, args.n_head).to(device)
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-    loss_fn = nn.BCELoss()
 
     train_loader = torch.utils.data.DataLoader(
         train_ds, batch_size=args.batch_size, shuffle=True, num_workers=args.num_workers)
@@ -259,13 +259,16 @@ def main():
         test_ds, batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     best_val_loss = float("inf")
-    best_path = os.path.join(args.output_dir, "best_model.pt")
+    best_path = os.path.join(run_dir, "best_model.pt")
+    train_losses, val_losses = [], []
 
     for epoch in range(1, args.epochs + 1):
-        train_loss, train_acc = run_epoch(model, train_loader, optimizer, loss_fn, train=True, device=device)
-        val_loss, val_acc = run_epoch(model, val_loader, optimizer, loss_fn, train=False, device=device)
+        train_loss, train_acc = run_epoch(model, train_loader, optimizer, pos_weight, train=True, device=device)
+        val_loss, val_acc = run_epoch(model, val_loader, optimizer, pos_weight, train=False, device=device)
         print(f"epoch {epoch:3d} | train loss {train_loss:.4f} acc {train_acc:.3f} "
               f"| val loss {val_loss:.4f} acc {val_acc:.3f}")
+        train_losses.append(train_loss)
+        val_losses.append(val_loss)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -279,10 +282,10 @@ def main():
                         "val_loss": val_loss}, best_path)
             print(f"  -> new best (val loss {val_loss:.4f}), saved to {best_path}")
 
-    test_loss, test_acc = run_epoch(model, test_loader, optimizer, loss_fn, train=False, device=device)
+    test_loss, test_acc = run_epoch(model, test_loader, optimizer, pos_weight, train=False, device=device)
     print(f"\nFinal test | loss {test_loss:.4f} acc {test_acc:.3f}")
 
-    final_path = os.path.join(args.output_dir, "final_model.pt")
+    final_path = os.path.join(run_dir, "final_model.pt")
     torch.save({"model_state_dict": model.state_dict(),
                 "spatial_input_dim": x_spatial0.shape[0],
                 "temporal_input_dim": x_temporal0.shape[0],
@@ -292,11 +295,16 @@ def main():
                 "test_loss": test_loss,
                 "test_acc": test_acc}, final_path)
 
+    loss_curve_path = os.path.join(run_dir, "loss_curve.png")
+    plot_loss_curve(train_losses, val_losses, loss_curve_path)
+    print(f"Saved loss curve to {loss_curve_path}")
+
     if args.upload_to_s3:
         s3 = boto3.client("s3")
-        for local_path in (best_path, final_path):
-            s3.upload_file(local_path, BUCKET_NAME, args.s3_model_prefix + os.path.basename(local_path))
-        print(f"Uploaded checkpoints to s3://{BUCKET_NAME}/{args.s3_model_prefix}")
+        run_prefix = f"{args.s3_model_prefix}{run_id}/"
+        for local_path in (best_path, final_path, loss_curve_path):
+            s3.upload_file(local_path, BUCKET_NAME, run_prefix + os.path.basename(local_path))
+        print(f"Uploaded run artifacts to s3://{BUCKET_NAME}/{run_prefix}")
 
 
 if __name__ == "__main__":
