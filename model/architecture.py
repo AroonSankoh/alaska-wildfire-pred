@@ -1,6 +1,7 @@
 import torch
-import torch.nn as nn 
+import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 class CNNEncoder(nn.Module):
     """
@@ -39,32 +40,39 @@ class TransformerEncoder(nn.Module):
     The core temporal encoder of the hybrid wildfire detection model.
     """
 
-    def __init__(self, input_dim, hidden_dim, embedding_dim, n_head, num_layers):
+    def __init__(self, input_dim, hidden_dim, embedding_dim, n_head, num_layers, max_seq_len=30):
         """
         Initialization function that initializes transformer layers according to the
         input dimension, internal transformer width (hidden_dim), output (embedding)
         dimension, number of attention heads, and number of layers.
         """
         super().__init__()
-        # projects the raw input (e.g. 5 ERA5 variables) up to hidden_dim before the
-        # transformer -- without this, d_model was tied directly to input_dim, so with
-        # only 5 raw features the transformer had almost no representational room
+        # projects the raw input (e.g. 5 ERA5 variables) up to hidden_dim before the transformer
         self.input_proj = nn.Linear(input_dim, hidden_dim)
-        self.trans_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=n_head)
+        self.trans_layer = nn.TransformerEncoderLayer(d_model=hidden_dim, nhead=n_head, batch_first=True)
         self.trans_encoder = nn.TransformerEncoder(self.trans_layer, num_layers=num_layers)
         self.linear = nn.Linear(hidden_dim, embedding_dim)
 
+        # fixed sinusoidal positional encoding that uses zero learned params
+        positional_encoding = torch.zeros(max_seq_len, hidden_dim)
+        position = torch.arange(0, max_seq_len, dtype=torch.float).unsqueeze(1)
+        div_term = torch.exp(torch.arange(0, hidden_dim, 2).float() * (-np.log(10000.0) / hidden_dim))
+        positional_encoding[:, 0::2] = torch.sin(position * div_term)
+        positional_encoding[:, 1::2] = torch.cos(position * div_term)
+        self.register_buffer("pos_encoding", positional_encoding)
+
     def forward(self, X):
         """
-        Forward propogation call for a 2D transformer encoder.
-        Accepts both 1-D (temporal_dim) and batched (batch, temporal_dim) inputs.
+        Forward propogation call for a transformer encoder.
+        Accepts (seq_len, input_dim) unbatched or (batch, seq_len, input_dim) batched inputs.
         """
-        if X.dim() == 1:
+        if X.dim() == 2:
             X = X.unsqueeze(0)
         X = self.input_proj(X)
-        X = self.trans_encoder(X.unsqueeze(0))
+        X = X + self.pos_encoding[:X.shape[1], :]
+        X = self.trans_encoder(X)
         # collapse sequence dimension by taking the mean
-        X = X.mean(0)
+        X = X.mean(dim=1)
         X = self.linear(X)
         return X
     
@@ -97,8 +105,8 @@ class WildfireModel(nn.Module):
         # assert input dimensionality is consistently unbatched or batched
         if x_spatial.dim() not in (1, 2):
             raise ValueError(f"X_spatial must be 1D (unbatched) or 2D (batched), got shape: {tuple(x_spatial.shape)}")
-        if x_temporal.dim() not in (1, 2):
-            raise ValueError(f"X_temporal must be 1D (unbatched) or 2D (batched), got shape: {tuple(x_temporal.shape)}")
+        if x_temporal.dim() not in (2, 3):
+            raise ValueError(f"X_temporal must be 2D (unbatched: seq_len x features) or 3D (batched), got shape: {tuple(x_temporal.shape)}")
         
         if x_spatial.dim() == 1:
             x_spatial = x_spatial.unsqueeze(0) 

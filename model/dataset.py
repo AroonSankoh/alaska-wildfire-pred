@@ -5,6 +5,7 @@ S1_KEYS = ['vh_band_mean', 'vh_band_std', 'vv_band_mean', 'vv_band_std']
 S2_KEYS = ['red_mean', 'red_std', 'green_mean', 'green_std', 'nir_mean', 'nir_std', 'swir_mean',
            'swir_std', 'ndvi_mean', 'ndvi_std', 'nbr_mean', 'nbr_std']
 ERA5_KEYS = ['u10', 'v10', 'd2m', 't2m', 'tp']
+ERA5_SEQ_LEN = 30  # must match zonal_aggregator.py's n_days
 SPATIAL_KEYS = S1_KEYS + S2_KEYS
 TEMPORAL_KEYS = ERA5_KEYS
 
@@ -56,7 +57,9 @@ class dataset(torch.utils.data.Dataset):
             self.statistic_means[f"mean_{key}"] = _safe_mean(values, f"s2_stats.{key}")
 
         for key in valid_tile["era5_stats"].keys():
-            values = [tile["era5_stats"][key] for _, tile in self.data_list if tile["era5_stats"] is not None]
+            # each tile's era5_stats[key] is a 30-day sequence, so flatten across tiles and days
+            values = [day_val for _, tile in self.data_list if tile["era5_stats"] is not None
+                      for day_val in tile["era5_stats"][key]]
             self.statistic_means[f"mean_{key}"] = _safe_mean(values, f"era5_stats.{key}")
 
 
@@ -80,10 +83,13 @@ class dataset(torch.utils.data.Dataset):
                 tile["s2_stats"][key] = self.statistic_means[f"mean_{key}"]
 
         if tile["era5_stats"] is None:
-                tile["era5_stats"] = dict.fromkeys(ERA5_KEYS)
+                tile["era5_stats"] = {k: [None] * ERA5_SEQ_LEN for k in ERA5_KEYS}
         for key in ERA5_KEYS:
-            if is_missing_value(tile["era5_stats"][key]):
-                tile["era5_stats"][key] = self.statistic_means[f"mean_{key}"]
+            # impute each missing day independently rather than the whole sequence
+            tile["era5_stats"][key] = [
+                self.statistic_means[f"mean_{key}"] if is_missing_value(day_val) else day_val
+                for day_val in tile["era5_stats"][key]
+            ]
 
         # flatten and concatenate the sentinel statistics into a single vector
         s1_flattened = flatten_stats(tile["s1_stats"] or {})
@@ -91,8 +97,10 @@ class dataset(torch.utils.data.Dataset):
 
         x_spatial = torch.tensor(np.concatenate([list(s1_flattened.values()), list(s2_flattened.values())])).float()
 
-        # stack era5 statistics into a 2D vector
-        x_temporal = torch.tensor(np.array([tile["era5_stats"][k] for k in ERA5_KEYS])).float()
+        # stack into (seq_len, n_vars), most-recent day last
+        x_temporal = torch.tensor(
+            np.array([tile["era5_stats"][k] for k in ERA5_KEYS])
+        ).float().transpose(0, 1)
 
         return x_spatial, x_temporal
 

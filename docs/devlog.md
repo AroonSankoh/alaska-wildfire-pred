@@ -629,3 +629,79 @@ winner at full length, so there's a chance to sanity-check the winning config be
 committing a longer run to it.
 
 Not yet run — next step is actually kicking off the sweep on EC2.
+
+## First sweep run - sequential, CPU-only - 07/28/26
+
+Kicked off `hyperparameter_sweep.py --n-trials 20 --trial-epochs 8` on EC2. Confirmed it's
+running as designed: trial 1 (`embedding_dim=16`, `n_head=8`, `temporal_hidden_dim=32`, an
+otherwise-valid divisibility combo) completed cleanly at `val bal_acc 0.5619`, in the same
+~0.54-0.60 band every full run has landed in — no surprises, dataset/pos_weight counts match
+prior runs exactly since the split seed is unchanged. At ~125s/trial for 8 epochs, 20 trials
+is roughly 40 minutes total on CPU.
+
+Trials run strictly sequentially (`for trial in ...: run_trial(...)`), each one training to
+completion before the next starts — deliberate given this is a single CPU box with no GPU, so
+"concurrent" trials would just be fighting each other for the same cores rather than actually
+speeding anything up, and keeping one model in memory at a time avoids any risk of trials
+interfering with each other's `torch` global state.
+
+**Future work note**: if this ever moves to a GPU instance (or a multi-core box where trials
+plausibly wouldn't just contend with each other), it'd be worth adding real concurrency — a
+`--n-workers`/`--parallel` flag on the existing script (e.g. `multiprocessing` or
+`concurrent.futures`, each worker pinned to its own GPU or CPU affinity), or a separate
+script entirely if the concurrency model ends up being different enough (e.g. dispatching
+trials as independent EC2/cloud jobs rather than in-process workers) to not be worth
+shoehorning into the current sequential design. Not needed while everything runs on a single
+CPU box, but worth remembering once that changes.
+
+## Full sweep confirmation run - 08/02/26
+
+Ran the sweep's winning config at full length (30 epochs). Result landed right where the
+20-trial clustering predicted: best val bal_acc 0.5863 at epoch 20, final test bal_acc 0.580.
+Confirms the ~0.52-0.60 ceiling wasn't a short-training artifact — more epochs on the winning
+config didn't break through it. Next lever is the ERA5 mean-aggregation limitation flagged
+during the sweep write-up, not further hyperparameter search.
+
+## ERA5 daily-sequence pipeline change - 08/12/26
+
+Implemented the pipeline change flagged during the sweep: `zonal_aggregator.py`'s
+`aggregate()` was mean-collapsing each tile's whole ERA5 antecedent window into a single
+scalar per variable before it ever reached the model, so `TransformerEncoder` was attending
+over a sequence of length 1 (a no-op — self-attention over one token can only attend to
+itself). Fixed by resampling each ERA5 variable to daily means and keeping a fixed
+`N_ERA5_DAYS=30` window (`_resample_daily_last_n`), so `era5_stats` per tile is now
+`{var: [30 daily floats]}` instead of `{var: float}`. Resampled once per variable over the
+whole grid, not per tile — doing it ~500x per scene for no reason would've been drastically
+slower since a tile's daily series is just a lat/lon slice of the same grid.
+
+Picked a fixed 30-day window (truncate, not pad) over keeping the full variable-length
+collected window (33-61 days depending on where in its month a fire/control landed) with
+padding + an attention mask — the collection strategy already guarantees at least 30 days per
+scene, so truncating avoids padding/masking complexity with no real downside.
+
+Downstream changes to consume `(seq_len, n_vars)` instead of a flat `(n_vars,)` vector:
+`model/dataset.py`'s mean-imputation now flattens across tiles and days (a NaN/Inf day gets
+imputed with that variable's dataset-wide mean, not the whole sequence); `x_temporal` is built
+via transpose to `(seq_len, n_vars)`. `model/augmentation.py`'s `TileAugmenter.jitter` now
+samples independent noise per timestep instead of one constant offset repeated across all 30
+days (a single per-variable offset would've been a much weaker augmentation); `dropout`
+needed no code change since its mask already derives from `x_temporal`'s actual shape.
+`training/train.py`'s `build_feature_stds` ERA5 branch flattens across days the same way.
+
+`model/architecture.py`'s `TransformerEncoder` had no positional encoding at all (meaningless
+at sequence length 1). Added a fixed sinusoidal encoding rather than a learned `nn.Embedding`
+table — sinusoidal adds zero trainable parameters, which matters given the dataset is already
+small enough that the sweep plateaued at ~0.52-0.60 bal_acc regardless of model size; a
+learned encoding would add parameters with limited data to learn them well. Also switched
+`nn.TransformerEncoderLayer` to `batch_first=True` to keep `(batch, seq_len, hidden)` shape
+throughout, and widened `WildfireModel.forward`'s dimensionality assertions from `(1, 2)` to
+`(2, 3)` to match the new unbatched/batched shapes.
+
+Since `s1_stats`/`s2_stats` don't change in this pipeline change, wrote
+`scripts/rebuild_era5_stats.py` to patch each cached tile's `era5_stats` field in place
+rather than rerunning the full multi-day `build_tile_cache.py` (S3 downloads, RTC, cloud
+masking, everything) — it only re-downloads each scene's small ERA5 grib (discarded after the
+original run) and overwrites `era5_stats` using the `(i, j)` tile keys already in the cache.
+
+Not yet run on EC2 — next step is a smoke test on a few scenes before running across the full
+cache.

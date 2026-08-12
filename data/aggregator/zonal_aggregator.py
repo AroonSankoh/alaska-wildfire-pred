@@ -33,7 +33,21 @@ def _assert_consistent_shapes(band_dict, label, expected_size):
                     f"(shape: {val.shape}), most likely a band was loaded at the wrong target shape upstream."
                )
 
-                
+
+def _resample_daily_last_n(data_array, n_days=30):
+    """
+    Resamples raw ERA5 timesteps to daily means and keeps the last n_days before cutoff.
+    """
+    time_dim = 'valid_time' if 'valid_time' in data_array.dims else 'time'
+    daily = data_array.resample({time_dim: '1D'}).mean()
+    if daily.sizes[time_dim] < n_days:
+        raise ValueError(
+            f"Only {daily.sizes[time_dim]} daily ERA5 timesteps available, need at least {n_days}. "
+            f"This scene's antecedent window may be shorter than expected."
+        )
+    return daily.isel({time_dim: slice(-n_days, None)})
+
+
 def aggregate(sentinel1_data, sentinel2_data, era5_data):
     """
     Aggregate Sentinel-1 data, Sentinel-2 data, and ERA5 data using a tiling strategy. 
@@ -54,7 +68,10 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
     era5_sorted = {k: v.sortby('latitude') for k, v in era5_data.items()}
     era5_lats = np.sort(era5_data['u10']['latitude'])
     era5_longs = np.sort(era5_data['u10']['longitude'])
-    
+
+    # resampled once per variable over the whole grid, not per-tile
+    era5_daily = {k: _resample_daily_last_n(v) for k, v in era5_sorted.items()}
+
     # vectorize and bin each pixel according to the shape of each separate scene 
     sentinel1_longs, sentinel1_lats = vectorize(vh_transform, vh_shape, s1_crs)
     sentinel2_longs, sentinel2_lats = vectorize(nir_transform, nir_shape, s2_crs)
@@ -109,11 +126,11 @@ def aggregate(sentinel1_data, sentinel2_data, era5_data):
                 "s1_stats": s1_stats.loc[(i, j)].to_dict() if (i, j) in s1_stats.index else None,
                 "s2_stats": s2_stats.loc[(i, j)].to_dict() if (i, j) in s2_stats.index else None,
                 "era5_stats": {
-                    'u10': float(era5_sorted['u10'].isel(latitude=i, longitude=j).mean().item()),
-                    'v10': float(era5_sorted['v10'].isel(latitude=i, longitude=j).mean().item()),
-                    'd2m': float(era5_sorted['d2m'].isel(latitude=i, longitude=j).mean().item()),
-                    't2m': float(era5_sorted['t2m'].isel(latitude=i, longitude=j).mean().item()),
-                    'tp':  float(era5_sorted['tp'].isel(latitude=i, longitude=j).mean().item()),
+                    'u10': era5_daily['u10'].isel(latitude=i, longitude=j).values.astype(float).tolist(),
+                    'v10': era5_daily['v10'].isel(latitude=i, longitude=j).values.astype(float).tolist(),
+                    'd2m': era5_daily['d2m'].isel(latitude=i, longitude=j).values.astype(float).tolist(),
+                    't2m': era5_daily['t2m'].isel(latitude=i, longitude=j).values.astype(float).tolist(),
+                    'tp':  era5_daily['tp'].isel(latitude=i, longitude=j).values.astype(float).tolist(),
                 }
             }
             tiles[(i, j)]["s1_stats"] = nullify_nan(tiles[(i, j)]["s1_stats"])

@@ -134,8 +134,8 @@ def build_feature_stds(train_tiles):
                 if t["s2_stats"] is not None and not is_missing_value(t["s2_stats"][key])]
         stds[key] = _safe_std(vals)
     for key in ERA5_KEYS:
-        vals = [t["era5_stats"][key] for t in train_tiles.values()
-                if t["era5_stats"] is not None and not is_missing_value(t["era5_stats"][key])]
+        vals = [day_val for t in train_tiles.values() if t["era5_stats"] is not None
+                for day_val in t["era5_stats"][key] if not is_missing_value(day_val)]
         stds[key] = _safe_std(vals)
     return stds
 

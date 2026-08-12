@@ -33,9 +33,6 @@ sys.path.append(os.path.join(REPO_ROOT, "training"))
 from model import WildfireModel
 from train import build_datasets, train_model
 
-# embedding_dim / temporal_hidden_dim are both drawn from sets that are multiples of every
-# candidate n_head, so every sampled combination is guaranteed valid (no divisibility
-# rejection/retry logic needed)
 EMBEDDING_DIM_CHOICES = [16, 32, 64, 128]
 TEMPORAL_HIDDEN_DIM_CHOICES = [16, 32, 64]
 N_HEAD_CHOICES = [1, 2, 4, 8]
@@ -88,8 +85,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    # built once and reused across every trial -- the split/normalization/pos_weight stay
-    # fixed, only the model architecture and training hyperparameters vary trial to trial
+    # built once and reused across every trial, the split/normalization/pos_weight stay fixed, 
+    # with only the model architecture and training hyperparameters vary trial to trial
     data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed)
     pos_weight = torch.tensor(data["pos_weight_value"]).float().to(device)
     print(f"Loaded {data['n_records']} cached scenes ({data['n_fire']} fires, {data['n_control']} controls)")
