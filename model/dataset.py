@@ -5,7 +5,7 @@ S1_KEYS = ['vh_band_mean', 'vh_band_std', 'vv_band_mean', 'vv_band_std']
 S2_KEYS = ['red_mean', 'red_std', 'green_mean', 'green_std', 'nir_mean', 'nir_std', 'swir_mean',
            'swir_std', 'ndvi_mean', 'ndvi_std', 'nbr_mean', 'nbr_std']
 ERA5_KEYS = ['u10', 'v10', 'd2m', 't2m', 'tp']
-ERA5_SEQ_LEN = 30  # must match zonal_aggregator.py's n_days
+ERA5_SEQ_LEN = 30  # must match zonal_aggregator.py's N_ERA5_DAYS
 SPATIAL_KEYS = S1_KEYS + S2_KEYS
 TEMPORAL_KEYS = ERA5_KEYS
 

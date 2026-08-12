@@ -3,6 +3,8 @@ import numpy as np
 import pandas as pd
 from tqdm import tqdm
 
+N_ERA5_DAYS = 30
+
 def bin_data(lats, longs, era5_lats, era5_lons):
     """
     Place each pixel (latitude + longitude) within their respective bins, as defined by the ERA5 data.
@@ -34,7 +36,7 @@ def _assert_consistent_shapes(band_dict, label, expected_size):
                )
 
 
-def _resample_daily_last_n(data_array, n_days=30):
+def _resample_daily_last_n(data_array, n_days=N_ERA5_DAYS):
     """
     Resamples raw ERA5 timesteps to daily means and keeps the last n_days before cutoff.
     """
