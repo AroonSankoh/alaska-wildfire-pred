@@ -341,7 +341,7 @@ def main():
     print(f"Class weighting: pos_weight={data['pos_weight_value']:.3f}")
 
     x_spatial0, x_temporal0, _ = data["train_ds"][0]
-    model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0], args.embedding_dim,
+    model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[-1], args.embedding_dim,
                            args.n_layers, args.n_head, temporal_hidden_dim=args.temporal_hidden_dim).to(device)
 
     best_state_dict, best_val_metrics, train_losses, val_losses = train_model(
@@ -352,7 +352,7 @@ def main():
 
     model_config = {
         "spatial_input_dim": x_spatial0.shape[0],
-        "temporal_input_dim": x_temporal0.shape[0],
+        "temporal_input_dim": x_temporal0.shape[-1],
         "embedding_dim": args.embedding_dim,
         "temporal_hidden_dim": args.temporal_hidden_dim,
         "n_layers": args.n_layers,
@@ -369,9 +369,9 @@ def main():
           f"val bal_acc {best_val_metrics['balanced_acc']:.4f}, "
           f"val loss {best_val_metrics['loss']:.4f}) to {best_path}")
 
-    # evaluate on the best-val-balanced-accuracy checkpoint, not whatever `model` holds after
-    # the last epoch (that's what final_model.pt below is for instead)
-    best_model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[0], args.embedding_dim,
+    # evaluate on the best-val-balanced-accuracy checkpoint, not whatever model is after
+    # the last epoch, that's what final_model.pt below is for instead
+    best_model = WildfireModel(x_spatial0.shape[0], x_temporal0.shape[-1], args.embedding_dim,
                                 args.n_layers, args.n_head, temporal_hidden_dim=args.temporal_hidden_dim).to(device)
     best_model.load_state_dict(best_state_dict)
 

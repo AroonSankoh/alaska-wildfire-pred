@@ -57,7 +57,7 @@ def sample_config(rng):
 def run_trial(config, data, pos_weight, epochs, device):
     x_spatial0, x_temporal0, _ = data["train_ds"][0]
     model = WildfireModel(
-        x_spatial0.shape[0], x_temporal0.shape[0], config["embedding_dim"], config["n_layers"],
+        x_spatial0.shape[0], x_temporal0.shape[-1], config["embedding_dim"], config["n_layers"],
         config["n_head"], temporal_hidden_dim=config["temporal_hidden_dim"],
     ).to(device)
 

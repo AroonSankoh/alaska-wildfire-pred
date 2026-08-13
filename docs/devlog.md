@@ -705,3 +705,18 @@ original run) and overwrites `era5_stats` using the `(i, j)` tile keys already i
 
 Not yet run on EC2 — next step is a smoke test on a few scenes before running across the full
 cache.
+
+## Post-rebuild model-construction bug - 08/13/26
+
+Smoke test and full rebuild (`--skip-existing`, 494 patched + 6 skipped, 0 failed) both ran
+clean, but before kicking off training again, caught a real bug in how the model gets built:
+`train.py`'s `main()` and `hyperparameter_sweep.py`'s `run_trial()` both compute
+`temporal_input_dim` as `x_temporal0.shape[0]`, which was correct back when `x_temporal0` was
+a flat `(n_vars,)` vector (shape[0] = 5 features). Now that it's `(seq_len, n_vars)` =
+`(30, 5)`, `shape[0]` is the sequence length, not the per-timestep feature count
+`TransformerEncoder.input_proj` actually expects — would've built `nn.Linear(30, hidden_dim)`
+and crashed the instant it saw real `(batch, 30, 5)` input. Fixed by switching all four call
+sites (`train.py` main-run model, its `model_config` dict, its best-checkpoint-reload model,
+and the sweep's `run_trial`) to `x_temporal0.shape[-1]` instead. Caught by re-reading the
+model-construction code path specifically for the new tensor shapes before running anything,
+not by an actual crash.
