@@ -745,6 +745,19 @@ Python loop. Both were introduced in the original ERA5 sequence diff and only su
 actually run at full dataset scale -- worth remembering that "looks correct" and "runs fast at
 this scale" are different checks, especially for anything inside a per-`__getitem__` hot path.
 
+## "Numpy is not available" after the vectorization fix - 08/13/26
+
+All 20 sweep trials failed immediately with `Numpy is not available` after the vectorization
+fix above. Root cause was the EC2 env's numpy/torch ABI mismatch flagged earlier as a harmless
+warning (`Failed to initialize NumPy: _ARRAY_API not found`) -- it turned out not to be
+harmless for one specific call: `torch.from_numpy()`, used in the new vectorized `jitter()`,
+requires the same broken C-API hook and has no fallback, so it hard-fails. `torch.tensor()`
+(used everywhere else, including the pre-existing `x_spatial` line that had always worked in
+this same environment) takes a slower conversion path that doesn't depend on that hook. Fixed
+by swapping `torch.from_numpy(...)` to `torch.tensor(...)` in `jitter()` -- same vectorized
+rng call, just a different numpy-to-tensor conversion. `torch.from_numpy` was the only call to
+that function anywhere in the repo, confirmed via grep.
+
 ## Post-rebuild model-construction bug - 08/13/26
 
 Smoke test and full rebuild (`--skip-existing`, 494 patched + 6 skipped, 0 failed) both ran
