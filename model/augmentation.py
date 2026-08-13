@@ -34,12 +34,13 @@ class TileAugmenter:
             self.rng.normal(0, self.noise_scale * self.feature_stds.get(k, 1.0))
             for k in spatial_keys
         ]).float()
-        # x_temporal is (seq_len, n_vars), so noise is sampled per timestep, not one constant per variable
+        
+        # x_temporal is (seq_len, n_vars), which is one vectorized call for the whole noise matrix instead of
         seq_len = x_temporal.shape[0]
-        temporal_noise = torch.tensor([
-            [self.rng.normal(0, self.noise_scale * self.feature_stds.get(k, 1.0)) for k in temporal_keys]
-            for _ in range(seq_len)
-        ]).float()
+        temporal_scales = np.array([self.noise_scale * self.feature_stds.get(k, 1.0) for k in temporal_keys])
+        temporal_noise = torch.from_numpy(
+            self.rng.normal(0, temporal_scales, size=(seq_len, len(temporal_keys)))
+        ).float()
         return x_spatial + spatial_noise, x_temporal + temporal_noise
 
     def dropout(self, x_spatial, x_temporal, impute_value_spatial, impute_value_temporal):

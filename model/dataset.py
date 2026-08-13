@@ -82,14 +82,13 @@ class dataset(torch.utils.data.Dataset):
             if is_missing_value(tile["s2_stats"][key]):
                 tile["s2_stats"][key] = self.statistic_means[f"mean_{key}"]
 
+        era5_means = np.array([self.statistic_means[f"mean_{k}"] for k in ERA5_KEYS]).reshape(-1, 1)
         if tile["era5_stats"] is None:
-                tile["era5_stats"] = {k: [None] * ERA5_SEQ_LEN for k in ERA5_KEYS}
-        for key in ERA5_KEYS:
-            # impute each missing day independently rather than the whole sequence
-            tile["era5_stats"][key] = [
-                self.statistic_means[f"mean_{key}"] if is_missing_value(day_val) else day_val
-                for day_val in tile["era5_stats"][key]
-            ]
+            era5_matrix = np.repeat(era5_means, ERA5_SEQ_LEN, axis=1)
+        else:
+            # vectorized per-day imputation 
+            era5_matrix = np.array([tile["era5_stats"][k] for k in ERA5_KEYS], dtype=np.float64)
+            era5_matrix = np.where(np.isfinite(era5_matrix), era5_matrix, era5_means)
 
         # flatten and concatenate the sentinel statistics into a single vector
         s1_flattened = flatten_stats(tile["s1_stats"] or {})
@@ -98,9 +97,7 @@ class dataset(torch.utils.data.Dataset):
         x_spatial = torch.tensor(np.concatenate([list(s1_flattened.values()), list(s2_flattened.values())])).float()
 
         # stack into (seq_len, n_vars), most-recent day last
-        x_temporal = torch.tensor(
-            np.array([tile["era5_stats"][k] for k in ERA5_KEYS])
-        ).float().transpose(0, 1)
+        x_temporal = torch.tensor(era5_matrix).float().transpose(0, 1)
 
         return x_spatial, x_temporal
 

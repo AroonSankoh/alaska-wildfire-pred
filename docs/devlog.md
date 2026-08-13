@@ -706,6 +706,45 @@ original run) and overwrites `era5_stats` using the `(i, j)` tile keys already i
 Not yet run on EC2 — next step is a smoke test on a few scenes before running across the full
 cache.
 
+## Divergent git branches after parallel EC2/Mac edits - 08/13/26
+
+Pushed a follow-up commit from the Mac (the `x_temporal.shape[-1]` fix below) and hit a
+rejected push — turned out the EC2 side had independently implemented the same ERA5
+sequence pipeline change and already pushed it, so `main` had diverged. Diffed `main` against
+`origin/main` before touching anything: the real difference was almost entirely cosmetic
+(`N_ERA5_DAYS` constant placement/wording), except origin was missing the `shape[-1]` fix
+below entirely. `git pull --rebase origin main` resolved cleanly. Lesson: when running the
+same Claude session across two machines on the same repo, check `git log origin/main` before
+assuming a rejected push means something trivial.
+
+## Model-construction shape bug - 08/13/26
+
+Caught before running training again: `train.py`'s `main()` and `hyperparameter_sweep.py`'s
+`run_trial()` both compute `temporal_input_dim` as `x_temporal0.shape[0]`, correct when
+`x_temporal0` was a flat `(n_vars,)` vector but wrong now that it's `(seq_len, n_vars)` =
+`(30, 5)` -- `shape[0]` is the sequence length, not the per-timestep feature count
+`TransformerEncoder.input_proj` expects. Would have built `nn.Linear(30, hidden_dim)` and
+crashed on real `(batch, 30, 5)` input. Fixed all four call sites to `x_temporal0.shape[-1]`.
+
+## Severe training slowdown from unvectorized per-day loops - 08/13/26
+
+First real sweep attempt after the rebase stalled for 30+ minutes with zero trials completing
+(the old sweep's slowest trial finished in ~12 minutes). Root cause: two spots in the ERA5
+sequence change did Python-level loops over every (day, variable) pair per tile, per epoch,
+instead of vectorized numpy ops. `model/dataset.py`'s `__getitem__` ran a 150-iteration
+(30 days x 5 vars) list comprehension calling `is_missing_value()` per entry, for every one of
+53,652 training tiles, every epoch. `model/augmentation.py`'s `jitter()` was worse -- it made
+150 individual scalar `self.rng.normal()` calls per tile per epoch instead of one vectorized
+call. Across 8 epochs that's tens of millions of Python-level calls just for these two spots.
+
+Fixed both: `dataset.py`'s imputation now builds a `(5, 30)` numpy array directly from the
+per-key lists (5 Python-level iterations, not 150) and imputes via a single `np.where` against
+the whole array. `augmentation.py`'s `jitter()` now samples the entire `(seq_len, n_vars)`
+noise matrix in one `self.rng.normal(..., size=(seq_len, n_vars))` call instead of a nested
+Python loop. Both were introduced in the original ERA5 sequence diff and only surfaced once
+actually run at full dataset scale -- worth remembering that "looks correct" and "runs fast at
+this scale" are different checks, especially for anything inside a per-`__getitem__` hot path.
+
 ## Post-rebuild model-construction bug - 08/13/26
 
 Smoke test and full rebuild (`--skip-existing`, 494 patched + 6 skipped, 0 failed) both ran
