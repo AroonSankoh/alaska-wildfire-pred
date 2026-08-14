@@ -772,3 +772,59 @@ sites (`train.py` main-run model, its `model_config` dict, its best-checkpoint-r
 and the sweep's `run_trial`) to `x_temporal0.shape[-1]` instead. Caught by re-reading the
 model-construction code path specifically for the new tensor shapes before running anything,
 not by an actual crash.
+
+## ERA5 daily-sequence pipeline change validated - full run - 08/14/26
+
+Ran the sweep's winning config at full length (30 epochs, `lr=0.000555`, `batch_size=64`,
+`embedding_dim=64`, `temporal_hidden_dim=32`, `n_layers=1`, `n_head=1`, `weight_decay=1e-05`).
+Final test: `bal_acc 0.731`, `precision 0.522`, `recall 0.666`, `f1 0.585` -- best checkpoint
+saved at epoch 7 (`val bal_acc 0.7337`). This validates the whole ERA5 daily-sequence pipeline
+change: moved the balanced-accuracy ceiling from ~0.52-0.60 (every run under the old
+mean-aggregated, sequence-length-1 architecture) to ~0.73, a genuinely different regime, not
+incremental noise. The sweep's short-trial estimate (0.7263) matched the full run almost
+exactly this time, unlike the previous sweep cycle where the estimate dropped ~0.016 on the
+full run -- a good sign this number is stable, not a lucky short-trial artifact.
+
+Two things worth remembering about this result, not fixes, just honest framing for the
+writeup: val bal_acc plateaus by epoch 2 (0.708) and never meaningfully improves past epoch 7
+-- everything after that is the model overfitting the training set (train acc climbs to 96.5%,
+val loss climbs from ~1.0 to spikes over 2.0) while val bal_acc just noisily oscillates in the
+0.68-0.73 band. Checkpoint selection by val balanced accuracy correctly caught this and saved
+epoch 7 rather than epoch 30, so the final test number isn't contaminated by the later
+overfitting, but a future run could likely hit the same result in ~10 epochs instead of 30.
+Also, precision (0.522) is meaningfully lower than recall (0.666) -- the model catches about
+two-thirds of actual fire-risk tiles but is only right about half the time when it flags one.
+This is the expected effect of the class weighting deliberately favoring recall (missing a
+real fire risk costs more than a false alarm), not a bug, but worth stating explicitly rather
+than leading with balanced accuracy alone.
+
+This is the model being finalized for GitHub/HuggingFace -- no further tuning planned for now.
+
+## FWI ERA5 collection script - 08/14/26
+
+New `scripts/collect_fwi_era5.py`, separate from the prediction pipeline and tile_cache/. The
+prediction model's existing per-scene ERA5 gribs only cover a short antecedent window sized
+for that task; FWI's drought codes (DC especially, ~52-day memory) need a much longer
+continuous record to spin up before ignition/control date, so this pulls its own longer-window
+grib per scene rather than reusing what's already collected.
+
+Design decisions: 180-day lookback per scene, capped at Jan 1 of that year rather than
+reaching into the prior year (simpler than modeling each state's actual fire-season start --
+the dataset spans AK, NV, WA, OR, and CA, which have meaningfully different season timing, so
+a single fixed spring-start convention wouldn't have been defensible across all of them; a
+fixed lookback sidesteps that entirely). Covers both fires and controls (500 scenes total) --
+controls give the calculator non-burned baseline locations to validate against, and gribs are
+tiny (~5MB each, per the original collection's upload sizes) so the extra scenes cost nothing
+meaningful. The Jan-1 cap also guarantees every request's date range stays within a single
+calendar year, which matters because the CDS API request format takes year/month/day as
+separate lists and returns their cartesian product -- had the window been allowed to cross a
+year boundary, a naive year/month list would over-request unrelated year/month combinations.
+
+Reuses the exact `reanalysis-era5-single-levels` CDS request pattern (product_type, variable
+list, day/time list) from the original collection notebook, just with a longer date range and
+a padded area computed directly from metadata.json's stored `spatial_bounds` (a simplification
+of the original's footprint-union padding across 4 Sentinel products -- fine here since FWI
+only needs decent areal coverage, not exact parity). Output gribs go to a new `fwi/` S3 prefix
+(`fwi/{kind}/{state}/{scene_id}.grib` + a small per-scene metadata.json), kept fully separate
+from `fires/`/`controls/` so this can't collide with or accidentally corrupt the prediction
+dataset. Not yet run -- next step is a `--limit 3` smoke test on EC2.
