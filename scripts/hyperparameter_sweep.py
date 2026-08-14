@@ -23,6 +23,7 @@ import os
 import random
 import sys
 import time
+from datetime import datetime
 
 import torch
 
@@ -81,9 +82,13 @@ def main():
     parser.add_argument("--sweep-seed", type=int, default=0, help="Seed for the random-search sampling itself.")
     args = parser.parse_args()
 
-    os.makedirs(args.output_dir, exist_ok=True)
+    # each sweep gets its own timestamped dir under --output-dir, same pattern as train.py's run_dir
+    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    run_dir = os.path.join(args.output_dir, run_id)
+    os.makedirs(run_dir, exist_ok=True)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
+    print(f"Run directory: {run_dir}")
 
     # built once and reused across every trial, the split/normalization/pos_weight stay fixed, 
     # with only the model architecture and training hyperparameters vary trial to trial
@@ -111,7 +116,7 @@ def main():
             print(f"trial {trial:3d}/{args.n_trials} | {config} -> FAILED: {e}")
             results.append({"config": config, "error": str(e)})
 
-    results_path = os.path.join(args.output_dir, "sweep_results.json")
+    results_path = os.path.join(run_dir, "sweep_results.json")
     with open(results_path, "w") as f:
         json.dump(results, f, indent=2)
     print(f"\nSaved full results to {results_path}")
