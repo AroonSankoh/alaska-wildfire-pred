@@ -9,6 +9,7 @@ __pycache__/
 
 # Folders
 AK-Satellite-Imagery-Wildfire-Prediction/
+docs/
 
 # Ignore raw satellite data
 *.SAFE/
