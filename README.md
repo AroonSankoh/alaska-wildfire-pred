@@ -46,11 +46,17 @@ Each fire is paired with three controls that match the fires EPA Level III Eco-r
 Once you have identified a dataset for analysis, it is highly recommended to build and cache aggregated tiles before anything else. This way it won't be necessary to repeatedly load and aggregate source data whenever performing model training 
 or infererence. Investigate and edit the global variables within ```scripts/build_tile_cache.py``` to ensure the correct source data is used for tiling.  
 
-*Add similar notes on training and inference scripts once those are complete*
+### Training 
+*Add more notes on this once the FWI and Burn severity calculator are complete*
+
+### Hyperparameter Sweeps
+*Add more notes on this once the FWI and Burn severity calculator are complete*
+
+### Inference 
+*Add more notes on this once the FWI and Burn severity calculator are complete*
 
 ## TODOs
 Additions (in order of importance) yet to implement include: 
-- Training and inference scripts
-- Fire Weather Index calculator for ERA5 data (it'd be a very useful performance benchmark)
-- Test Cases 
+- Burn Severity Calculator 
+- Extra Test Cases 
 - Documentation
