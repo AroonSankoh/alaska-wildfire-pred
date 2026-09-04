@@ -23,13 +23,28 @@ def _flatten_time_step(data_array):
     stacked = stacked.reset_index('valid_time', drop=True).rename(valid_datetime='valid_time')
     return stacked
 
+def _time_dim_of(data_array):
+    """
+    Different ERA5 variables can end up with different time-dimension names after
+    load_era5_vars, so resolve the variable representing per-array, not once globally. 
+    """
+    return 'valid_time' if 'valid_time' in data_array.dims else 'time'
+
+def _grid_centroid(data_array):
+    """
+    Find the midpoint of the grib's own latitiude/longitude extent.
+    """
+    lat_center = float((data_array['latitude'].max() + data_array['latitude'].min()) / 2)
+    lon_center = float((data_array['longitude'].max() + data_array['longitude'].min()) / 2)
+    return lat_center, lon_center
+
 
 def load_era5_vars(grib_path, cutoff_datetime=None):
     """
     Loads and returns variables (wind speed/direction, humidity, temperature and precipiation), useful for wildfire pred.
     The cutoff datetime, if given, drops every timestep strictly after this datetime.
     """
-    datasets = cfgrib.open_datasets(grib_path)
+    datasets = cfgrib.open_datasets(grib_path, indexpath='')
 
     variables = {}
     for var_name in ('u10', 'v10', 'd2m', 't2m', 'tp'):
@@ -75,8 +90,8 @@ def calculate_fwi(variables):
     v10_arr = variables['v10']
     tp_arr = variables['tp']
 
-    time_dim = 'valid_time' if 'valid_time' in t2m_arr.dims else 'time'
-    n_timesteps = t2m_arr.sizes[time_dim]
+    n_timesteps = t2m_arr.sizes[_time_dim_of(t2m_arr)]
+    lat_center, lon_center = _grid_centroid(t2m_arr)
 
     # standard spring startup conditions (Van Wagner & Pickett 1985) that represent typical Canada/Alaska spring conditions
     ffmc_nought, dmc_nought, dc_nought = 85.0, 6.0, 15.0
@@ -85,14 +100,19 @@ def calculate_fwi(variables):
     # index 0 is midnight of day 1, so index 12 is noon, which the FWI calculator expects 
     noon_index = 12
     while noon_index < n_timesteps:
-        t2m = float(t2m_arr.isel({time_dim: noon_index}).values)
-        d2m = float(d2m_arr.isel({time_dim: noon_index}).values)
-        u10 = float(u10_arr.isel({time_dim: noon_index}).values)
-        v10 = float(v10_arr.isel({time_dim: noon_index}).values)
-        tp = float(tp_arr.isel({time_dim: noon_index}).values)
+        t2m = float(t2m_arr.isel({_time_dim_of(t2m_arr): noon_index}).sel(
+            latitude=lat_center, longitude=lon_center, method='nearest').values)
+        d2m = float(d2m_arr.isel({_time_dim_of(d2m_arr): noon_index}).sel(
+            latitude=lat_center, longitude=lon_center, method='nearest').values)
+        u10 = float(u10_arr.isel({_time_dim_of(u10_arr): noon_index}).sel(
+            latitude=lat_center, longitude=lon_center, method='nearest').values)
+        v10 = float(v10_arr.isel({_time_dim_of(v10_arr): noon_index}).sel(
+            latitude=lat_center, longitude=lon_center, method='nearest').values)
+        tp = float(tp_arr.isel({_time_dim_of(tp_arr): noon_index}).sel(
+            latitude=lat_center, longitude=lon_center, method='nearest').values)
 
         # month is extracted from the specific day's timestamp
-        timestamp = pd.Timestamp(t2m_arr[time_dim].isel({time_dim: noon_index}).values)
+        timestamp = pd.Timestamp(t2m_arr[_time_dim_of(t2m_arr)].isel({_time_dim_of(t2m_arr): noon_index}).values)
         month = timestamp.month
 
         # calculate today's fine fuel moisture content and initial spread index
