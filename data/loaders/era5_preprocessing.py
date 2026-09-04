@@ -30,6 +30,13 @@ def _time_dim_of(data_array):
     """
     return 'valid_time' if 'valid_time' in data_array.dims else 'time'
 
+def _approximate_noon_utc_hour(lon_center):
+    """
+    Offsets ERA5 timestamps from UTC to Local Standard Time (LST), the standard for FWI system inputs.
+    """
+    utc_offset_hours = round(lon_center / 15.0)
+    return (12 - utc_offset_hours) % 24
+
 def _grid_centroid(data_array):
     """
     Find the midpoint of the grib's own latitiude/longitude extent.
@@ -92,13 +99,14 @@ def calculate_fwi(variables):
 
     n_timesteps = t2m_arr.sizes[_time_dim_of(t2m_arr)]
     lat_center, lon_center = _grid_centroid(t2m_arr)
+    noon_utc_hour = _approximate_noon_utc_hour(lon_center)
 
     # standard spring startup conditions (Van Wagner & Pickett 1985) that represent typical Canada/Alaska spring conditions
     ffmc_nought, dmc_nought, dc_nought = 85.0, 6.0, 15.0
 
     result = None
     # index 0 is midnight of day 1, so index 12 is noon, which the FWI calculator expects 
-    noon_index = 12
+    noon_index = noon_utc_hour
     while noon_index < n_timesteps:
         t2m = float(t2m_arr.isel({_time_dim_of(t2m_arr): noon_index}).sel(
             latitude=lat_center, longitude=lon_center, method='nearest').values)
