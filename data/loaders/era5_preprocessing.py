@@ -182,8 +182,8 @@ def calculate_ffmc(f_nought, t2m, d2m, u10, v10, tp):
         """
         Calculate m0 (moisture content) from yesterday's FFMC code -- Eq. 1.
         """
-        # 147.2, 101, 59.5 are the fitted constants converting the FF-scale code back to % moisture
-        return np.divide(147.2 * (101 - f_nought), 59.5 + f_nought)
+        # 250 * 59.5 / 101 = 147.277.., 101, 59.5 are the fitted constants converting the FF-scale code back to % moisture
+        return np.divide((250 * 59.5 / 101) * (101 - f_nought), 59.5 + f_nought)
 
     m_nought = calculate_m(f_nought)
 
@@ -273,8 +273,8 @@ def calculate_ffmc(f_nought, t2m, d2m, u10, v10, tp):
         else:
             m = m_r # Ed >= m_r >= Ew: no change (p.12, step 8)
 
-    # Eq. 10: convert moisture content back to the FFMC code. 59.5, 250, 147.2 are more fitted constants
-    return 59.5 * np.divide(250 - m, 147.2 + m)
+    # Eq. 10: convert moisture content back to the FFMC code. 59.5, 250, and 250 * 59.5 / 101 = 147.277.. are more fitted constants
+    return 59.5 * np.divide(250 - m, (250 * 59.5 / 101) + m)
 
 
 def calculate_dmc(p_nought, t2m, d2m, tp, month):
@@ -395,7 +395,7 @@ def calculate_isi(f_today, u10, v10):
     Equation numbers below are from Van Wagner & Pickett (1985), Technical Report 33.
     """
     # Eq. 1 (reused): today's fine fuel moisture content, derived from TODAY's FFMC code
-    m = np.divide(147.2 * (101 - f_today), 59.5 + f_today)
+    m = np.divide((250 * 59.5 / 101) * (101 - f_today), 59.5 + f_today)
     wind_speed = np.sqrt(u10**2 + v10**2) * 3.6  # ERA5 m/s components -> km/h, as Eq. 24 expects
 
     # Eq. 24: wind effect on spread rate. 0.05039 is a fitted constant
