@@ -1,17 +1,13 @@
 """
-Random-search hyperparameter sweep over WildfireModel + training config.
+Random-search hyperparameter sweep over WildfireModel and its' training config 
+by building the train/val datasets once. Each trial gets the same split, 
+normalization, and class weighting. The model runs --trial-epochs epochs
+and is scored on validation balanced accuracy, the same metric that the 
+main training config is scored on.
 
-Builds the train/val datasets ONCE via training/train.py's build_datasets()
-(same split, normalization, and class weighting every trial gets) so a
-20-trial sweep doesn't re-read tile_cache/ from disk 20 times. Each trial
-trains a fresh model for --trial-epochs epochs (short, since this is a
-search over configs, not a final training run) and is scored on val
-balanced accuracy -- same metric main()'s checkpoint selection now uses,
-for consistency.
-
-Does NOT automatically retrain the winning config at full length --  it
-prints a ready-to-run train.py command for that instead, so you can decide
-how many epochs to actually commit to before kicking off a longer run.
+It does not automatically re-train the best config at a full run, it 
+prints a train.py command so the user can decide how many epochs to
+train (recommended amount based on previous runs: <12)
 
 Usage:
     python scripts/hyperparameter_sweep.py --cache-dir tile_cache --n-trials 20 --trial-epochs 8
@@ -91,7 +87,7 @@ def main():
     print(f"Run directory: {run_dir}")
 
     # built once and reused across every trial, the split/normalization/pos_weight stay fixed, 
-    # with only the model architecture and training hyperparameters vary trial to trial
+    # wherease the model architecture and training hyperparameters vary trial to trial
     data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed)
     pos_weight = torch.tensor(data["pos_weight_value"]).float().to(device)
     print(f"Loaded {data['n_records']} cached scenes ({data['n_fire']} fires, {data['n_control']} controls)")
