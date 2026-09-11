@@ -33,6 +33,8 @@ class dataset(torch.utils.data.Dataset):
         if valid_tile is None:
               raise ValueError("No valid (non-NaN) tiles exist to initialize the dataset with.")
 
+        self.era5_seq_len = len(valid_tile["era5_stats"][next(iter(valid_tile["era5_stats"]))])
+
         # guard before np.mean could be called on empty slices
         def _safe_mean(values, label):
             if len(values) == 0:
@@ -84,7 +86,7 @@ class dataset(torch.utils.data.Dataset):
 
         era5_means = np.array([self.statistic_means[f"mean_{k}"] for k in ERA5_KEYS]).reshape(-1, 1)
         if tile["era5_stats"] is None:
-            era5_matrix = np.repeat(era5_means, ERA5_SEQ_LEN, axis=1)
+            era5_matrix = np.repeat(era5_means, self.era5_seq_len, axis=1)
         else:
             # vectorized per-day imputation 
             era5_matrix = np.array([tile["era5_stats"][k] for k in ERA5_KEYS], dtype=np.float64)

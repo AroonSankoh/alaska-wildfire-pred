@@ -97,15 +97,21 @@ def split_groups(groups, val_frac, test_frac, seed):
     flatten = lambda gs: [r for g in gs for r in g]
     return flatten(train_groups), flatten(val_groups), flatten(test_groups)
 
-def merge_tiles(records):
+def merge_tiles(records, embargo_days=0):
     """
-    Merges tiles across scenes and trackes per-tile labels
+    Merges tiles across scenes and tracks per-tile labels. embargo_days drops the
+    last N (most recent) days from every tile's era5_stats sequences before use.
     """
     merged_tiles = {}
     labels = []
     for record in records:
         for tile_key, tile in record["tiles"].items():
             merged_key = f"{record['scene_id']}__{tile_key}"
+            if embargo_days > 0 and tile.get("era5_stats") is not None:
+                tile = dict(tile)  # shallow copy -- don't mutate the cached record in place
+                tile["era5_stats"] = {
+                    k: v[:len(v) - embargo_days] for k, v in tile["era5_stats"].items()
+                }
             merged_tiles[merged_key] = tile
             labels.append(record["label"])
     return merged_tiles, labels
@@ -140,7 +146,7 @@ def build_feature_stds(train_tiles):
     return stds
 
 
-def build_datasets(cache_dir, val_frac, test_frac, seed):
+def build_datasets(cache_dir, val_frac, test_frac, seed, era5_embargo_days=0):
     """
     Loads tile_cache/, splits by fire group, and builds the three
     LabeledTileDataset splits plus the train-split-only class weighting.
@@ -149,9 +155,9 @@ def build_datasets(cache_dir, val_frac, test_frac, seed):
     groups = group_by_fire(records)
     train_records, val_records, test_records = split_groups(groups, val_frac, test_frac, seed)
 
-    train_tiles, train_labels = merge_tiles(train_records)
-    val_tiles, val_labels = merge_tiles(val_records)
-    test_tiles, test_labels = merge_tiles(test_records)
+    train_tiles, train_labels = merge_tiles(train_records, embargo_days=era5_embargo_days)
+    val_tiles, val_labels = merge_tiles(val_records, embargo_days=era5_embargo_days)
+    test_tiles, test_labels = merge_tiles(test_records, embargo_days=era5_embargo_days)
 
     # feature_stds computed on TRAIN split only, to avoid val/test leakage into augmentation scale
     train_ds_unaugmented = WildfireDataset(train_tiles)
@@ -320,6 +326,9 @@ def main():
     parser.add_argument("--val-frac", type=float, default=0.15)
     parser.add_argument("--test-frac", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--era5-embargo-days", type=int, default=0,
+                         help="Drops the last N most-recent days from every tile's ERA5 "
+                              "sequence before training/eval.")
     args = parser.parse_args()
 
     # each run gets its own timestamped dir under --output-dir, holding the best/final
@@ -331,7 +340,11 @@ def main():
     print(f"Using device: {device}")
     print(f"Run directory: {run_dir}")
 
-    data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed)
+    if args.era5_embargo_days:
+        print(f"ERA5 embargo: dropping the last {args.era5_embargo_days} days from every "
+              f"tile's weather sequence (leakage ablation)")
+    data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed,
+                           era5_embargo_days=args.era5_embargo_days)
     print(f"Loaded {data['n_records']} cached scenes ({data['n_fire']} fires, {data['n_control']} controls)")
     print(f"Split: {data['n_train_scenes']} train scenes, {data['n_val_scenes']} val scenes, "
           f"{data['n_test_scenes']} test scenes")
@@ -364,7 +377,8 @@ def main():
                 **model_config,
                 "epoch": best_val_metrics["epoch"],
                 "val_loss": best_val_metrics["loss"],
-                "val_balanced_acc": best_val_metrics["balanced_acc"]}, best_path)
+                "val_balanced_acc": best_val_metrics["balanced_acc"],
+                "era5_embargo_days": args.era5_embargo_days}, best_path)
     print(f"Saved best checkpoint (epoch {best_val_metrics['epoch']}, "
           f"val bal_acc {best_val_metrics['balanced_acc']:.4f}, "
           f"val loss {best_val_metrics['loss']:.4f}) to {best_path}")
@@ -387,7 +401,8 @@ def main():
     torch.save({"model_state_dict": model.state_dict(),
                 **model_config,
                 "test_loss": test_metrics["loss"],
-                "test_acc": test_metrics["acc"]}, final_path)
+                "test_acc": test_metrics["acc"],
+                "era5_embargo_days": args.era5_embargo_days}, final_path)
 
     loss_curve_path = os.path.join(run_dir, "loss_curve.png")
     plot_loss_curve(train_losses, val_losses, loss_curve_path)
