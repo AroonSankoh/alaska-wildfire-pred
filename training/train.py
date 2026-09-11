@@ -341,8 +341,8 @@ def main():
     print(f"Run directory: {run_dir}")
 
     if args.era5_embargo_days:
-        print(f"ERA5 embargo: dropping the last {args.era5_embargo_days} days from every "
-              f"tile's weather sequence (leakage ablation)")
+        print(f"ERA5 embargo activated: dropping the last {args.era5_embargo_days} days from every "
+              f"tile's weather sequence.")
     data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed,
                            era5_embargo_days=args.era5_embargo_days)
     print(f"Loaded {data['n_records']} cached scenes ({data['n_fire']} fires, {data['n_control']} controls)")
