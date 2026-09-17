@@ -6,16 +6,21 @@ horizon (1 month head). See devlog as to why the 3-horizon matrix was dropped.
 Requirements:
     Scene layout expected at --scene-dir: 
 
-    <scene-dir>/S1_..._<date>_pre.SAFE/...
-    <scene-dir>/S1_..._<date>_post.SAFE/...
-    <scene-dir>/S2_..._<date>_pre.SAFE/...
-    <scene-dir>/S2_..._<date>_post.SAFE/...
+    <scene-dir>/S1_..._<date>_pre.SAFE    (zip archive, or an already-extracted dir)
+    <scene-dir>/S1_..._<date>_post.SAFE   (zip archive, ignored -- see below)
+    <scene-dir>/S2_..._<date>_pre.SAFE    (zip archive, or an already-extracted dir)
+    <scene-dir>/S2_..._<date>_post.SAFE   (zip archive, ignored -- see below)
     <scene-dir>/ERA5_..._YYYYMMDD.grib
     <scene-dir>/metadata.json
 
-    This matches the dataset's actual per-scene folder as published (e.g. 
-    one of the fires/{state}/{scene}/ or controls/{state}/{scene}/ folders), 
-    with all files sitting flat alongside eachother. 
+    This matches the dataset's actual per-scene folder as published (e.g.
+    one of the fires/{state}/{scene}/ or controls/{state}/{scene}/ folders),
+    with all files sitting flat alongside eachother. Despite the ".SAFE"
+    suffix, each *_pre.SAFE/*_post.SAFE entry is actually a zip archive (same
+    as the original S3 fires/controls pipeline) wrapping one nested,
+    differently-named *.SAFE directory -- this script extracts it to
+    --extract-dir automatically (mirrors build_tile_cache.py's
+    download_and_extract()). An already-extracted directory works too.
 
     Only the *_pre.SAFE products are used for inference (matching how the
     model was trained -- see build_tile_cache.py/load_s1_pre/load_s2_pre),
@@ -48,6 +53,7 @@ import glob
 import json
 import os
 import sys
+import zipfile
 
 import numpy as np
 import pandas as pd
@@ -66,41 +72,58 @@ from build_tile_cache import load_s1_pre, load_s2_pre, era5_cutoff_from_key
 from train import build_datasets
 
 
-def resolve_safe_dir(outer_dir):
+def ensure_extracted_safe_dir(path, extract_root, label):
     """
-    Resolves the location of the SAFE dir within the scene (sometimes it's nested).
+    Extracts actual SAFE dirs from zip files that wrap the *_pre.SAFE/*_post.SAFE
+    entries in a similar fashion as in build_tile_cache.py's download_and_extract(), 
+    if the path isn't already a directory.
     """
-    nested = glob.glob(os.path.join(outer_dir, "*.SAFE"))
-    if len(nested) > 1:
-        raise ValueError(f"Expected at most one nested .SAFE dir under {outer_dir}, found {nested}")
-    return nested[0] if nested else outer_dir
+    if os.path.isdir(path):
+        nested = glob.glob(os.path.join(path, "*.SAFE"))
+        if len(nested) > 1:
+            raise ValueError(f"Expected at most one nested .SAFE dir under {path}, found {nested}")
+        return nested[0] if nested else path
+
+    extract_dir = os.path.join(extract_root, os.path.splitext(os.path.basename(path))[0])
+    if not os.path.isdir(extract_dir):
+        os.makedirs(extract_dir, exist_ok=True)
+        print(f"  {label} is a zip archive -- extracting to {extract_dir} ...")
+        with zipfile.ZipFile(path, "r") as zf:
+            zf.extractall(extract_dir)
+
+    safe_dirs = glob.glob(os.path.join(extract_dir, "*.SAFE"))
+    if len(safe_dirs) != 1:
+        raise ValueError(f"Expected exactly one .SAFE dir after extracting {path}, found {safe_dirs}")
+    return safe_dirs[0]
 
 
-def find_scene_inputs(scene_dir):
+def find_scene_inputs(scene_dir, extract_root):
     """
     Picks the *_pre.SAFE products and the single ERA5 grib out of a scene folder.
     """
-    s1_outer_dirs = glob.glob(os.path.join(scene_dir, "S1_*_pre.SAFE"))
-    s2_outer_dirs = glob.glob(os.path.join(scene_dir, "S2_*_pre.SAFE"))
+    s1_outer = glob.glob(os.path.join(scene_dir, "S1_*_pre.SAFE"))
+    s2_outer = glob.glob(os.path.join(scene_dir, "S2_*_pre.SAFE"))
     era5_gribs = glob.glob(os.path.join(scene_dir, "*.grib"))
 
-    if len(s1_outer_dirs) != 1:
-        raise ValueError(f"Expected exactly one S1_*_pre.SAFE dir under {scene_dir}, found {s1_outer_dirs}")
-    if len(s2_outer_dirs) != 1:
-        raise ValueError(f"Expected exactly one S2_*_pre.SAFE dir under {scene_dir}, found {s2_outer_dirs}")
+    if len(s1_outer) != 1:
+        raise ValueError(f"Expected exactly one S1_*_pre.SAFE entry under {scene_dir}, found {s1_outer}")
+    if len(s2_outer) != 1:
+        raise ValueError(f"Expected exactly one S2_*_pre.SAFE entry under {scene_dir}, found {s2_outer}")
     if len(era5_gribs) != 1:
         raise ValueError(f"Expected exactly one .grib file under {scene_dir}, found {era5_gribs}")
 
-    return resolve_safe_dir(s1_outer_dirs[0]), resolve_safe_dir(s2_outer_dirs[0]), era5_gribs[0]
+    s1_safe_dir = ensure_extracted_safe_dir(s1_outer[0], extract_root, "S1 pre-scene")
+    s2_safe_dir = ensure_extracted_safe_dir(s2_outer[0], extract_root, "S2 pre-scene")
+    return s1_safe_dir, s2_safe_dir, era5_gribs[0]
 
 
-def load_scene_tiles(scene_dir, dem_output_dir):
+def load_scene_tiles(scene_dir, dem_output_dir, extract_root):
     """
     Runs a new, unlabeled scene through the same S1/S2/ERA5 loading + zonal
     aggregation pipeline used in build_tile_cache.py, then returns the
     sorted era5 lat/lon arrays needed to map each tile (i, j) back to a real coord.
     """
-    s1_safe_dir, s2_safe_dir, era5_grib = find_scene_inputs(scene_dir)
+    s1_safe_dir, s2_safe_dir, era5_grib = find_scene_inputs(scene_dir, extract_root)
 
     print(f"Loading Sentinel-1 from {s1_safe_dir} ...")
     s1_data = load_s1_pre(s1_safe_dir, dem_output_dir)
@@ -165,6 +188,8 @@ def build_arg_parser():
     parser.add_argument("--test-frac", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dem-dir", default="/tmp/wildfire_inference_dem")
+    parser.add_argument("--extract-dir", default="/tmp/wildfire_inference_extract",
+                         help="Where to unzip the scene's *_pre.SAFE archives before loading.")
     parser.add_argument("--inference-dir", default="inference",
                          help="Root output dir; results land under "
                               "<inference-dir>/<run_id>_<checkpoint_stem>/<scene_id>_risk_grid.csv "
@@ -223,7 +248,8 @@ def main():
         with open(metadata_path) as f:
             scene_meta = json.load(f)
 
-    tiles, era5_lats, era5_longs, cutoff_datetime = load_scene_tiles(args.scene_dir, args.dem_dir)
+    tiles, era5_lats, era5_longs, cutoff_datetime = load_scene_tiles(
+        args.scene_dir, args.dem_dir, args.extract_dir)
     tiles = apply_embargo(tiles, embargo_days)
 
     tile_ds = build_tile_dataset(tiles, statistic_means, era5_seq_len)
