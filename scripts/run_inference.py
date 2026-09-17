@@ -4,12 +4,25 @@ outputs a per-tile fire-probability grid at the model's single 30-day
 horizon (1 month head). See devlog as to why the 3-horizon matrix was dropped. 
 
 Requirements:
-    Scene layout expected under --scene-dir (mirrors build_tile_cache.py's
-    per-scene temp layout, just not zipped/downloaded from S3):
+    Scene layout expected at --scene-dir: 
 
-    <scene-dir>/s1/<name>.SAFE/...          (extracted Sentinel-1 SAFE pre-fire product)
-    <scene-dir>/s2/<name>.SAFE/...          (extracted Sentinel-2 SAFE pre-fire product)
-    <scene-dir>/era5/<name>_YYYYMMDD.grib   (single ERA5 grib, antecedent window)
+    <scene-dir>/S1_..._<date>_pre.SAFE/...
+    <scene-dir>/S1_..._<date>_post.SAFE/...
+    <scene-dir>/S2_..._<date>_pre.SAFE/...
+    <scene-dir>/S2_..._<date>_post.SAFE/...
+    <scene-dir>/ERA5_..._YYYYMMDD.grib
+    <scene-dir>/metadata.json
+
+    This matches the dataset's actual per-scene folder as published (e.g. 
+    one of the fires/{state}/{scene}/ or controls/{state}/{scene}/ folders), 
+    with all files sitting flat alongside eachother. 
+
+    Only the *_pre.SAFE products are used for inference (matching how the
+    model was trained -- see build_tile_cache.py/load_s1_pre/load_s2_pre),
+    the *_post.SAFE ones are ignored since there's no "post" for a forecast
+    that hasn't happened yet. Picked out by filename suffix, so this works
+    directly on a fire or control folder pulled straight from the dataset --
+    no repackaging needed.
 
     The ERA5 grib filename must end in an 8-digit date (same convention as the
     training pipeline), as that date is used as the forecast cutoff, i.e. "predict
@@ -47,16 +60,19 @@ from train import build_datasets
 
 
 def find_scene_inputs(scene_dir):
-    s1_safe_dirs = glob.glob(os.path.join(scene_dir, "s1", "*.SAFE"))
-    s2_safe_dirs = glob.glob(os.path.join(scene_dir, "s2", "*.SAFE"))
-    era5_gribs = glob.glob(os.path.join(scene_dir, "era5", "*.grib"))
+    """
+    Picks the *_pre.SAFE products and the single ERA5 grib out of a scene folder.
+    """
+    s1_safe_dirs = glob.glob(os.path.join(scene_dir, "S1_*_pre.SAFE"))
+    s2_safe_dirs = glob.glob(os.path.join(scene_dir, "S2_*_pre.SAFE"))
+    era5_gribs = glob.glob(os.path.join(scene_dir, "*.grib"))
 
     if len(s1_safe_dirs) != 1:
-        raise ValueError(f"Expected exactly one .SAFE dir under {scene_dir}/s1, found {s1_safe_dirs}")
+        raise ValueError(f"Expected exactly one S1_*_pre.SAFE dir under {scene_dir}, found {s1_safe_dirs}")
     if len(s2_safe_dirs) != 1:
-        raise ValueError(f"Expected exactly one .SAFE dir under {scene_dir}/s2, found {s2_safe_dirs}")
+        raise ValueError(f"Expected exactly one S2_*_pre.SAFE dir under {scene_dir}, found {s2_safe_dirs}")
     if len(era5_gribs) != 1:
-        raise ValueError(f"Expected exactly one .grib file under {scene_dir}/era5, found {era5_gribs}")
+        raise ValueError(f"Expected exactly one .grib file under {scene_dir}, found {era5_gribs}")
 
     return s1_safe_dirs[0], s2_safe_dirs[0], era5_gribs[0]
 
@@ -141,7 +157,9 @@ def build_arg_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoint", required=True, help="Path to a train.py checkpoint (.pt).")
     parser.add_argument("--scene-dir", required=True,
-                         help="Directory holding the new scene's s1/, s2/, era5/ inputs (see module docstring).")
+                         help="A single scene folder exactly as published in the dataset (e.g. a "
+                              "fires/{state}/{scene}/ or controls/{state}/{scene}/ folder) -- see "
+                              "module docstring for the expected layout.")
     parser.add_argument("--cache-dir", default="tile_cache",
                          help="Only needed as a fallback for older checkpoints that don't have "
                               "normalization stats saved -- must be the same --cache-dir used to "
