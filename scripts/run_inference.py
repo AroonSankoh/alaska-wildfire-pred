@@ -285,7 +285,9 @@ def main():
     print(f"Per-tile stats: mean {grid['fire_probability_30d'].mean():.3f}  "
           f"max {grid['fire_probability_30d'].max():.3f}  "
           f"min {grid['fire_probability_30d'].min():.3f}")
-    print(grid.to_string(index=False))
+    top5 = grid.sort_values("fire_probability_30d", ascending=False).head(5)
+    print("Top 5 highest-risk tiles:")
+    print(top5.to_string(index=False))
     print(f"\nVERDICT -- aggregated (mean-across-tiles) fire probability for this scene "
           f"over the next ~30 days: {scene_verdict:.3f}")
 
