@@ -29,16 +29,23 @@ Requirements:
     fire risk over the ~30 days following this date," and everything in the grib
     at or after that date is ignored.
 
-    Usage:
-        python scripts/run_inference.py \\
-            --checkpoint checkpoints/20260914_120000/best_model.pt \\
-            --scene-dir /path/to/new_scene \\
-            --cache-dir tile_cache \\
-            --output-csv risk_grid.csv
+Output:
+    Per-tile risk grid is saved by default to
+    inference/{run_id}_{checkpoint_stem}/{scene_id}_risk_grid.csv, e.g.
+    inference/20260914_140410_best_model/control_AK_65N141W_20190805_risk_grid.csv
+    This mirrors the checkpoints/{run_id}/ layout so results stay tied to
+    the exact checkpoint that produced them. Override with --output-csv.
+
+Usage:
+    python scripts/run_inference.py \
+        --checkpoint checkpoints/20260914_120000/best_model.pt \
+        --scene-dir /path/to/new_scene \
+        --cache-dir tile_cache
 """
 
 import argparse
 import glob
+import json
 import os
 import sys
 
@@ -53,9 +60,9 @@ sys.path.append(os.path.join(REPO_ROOT, "training"))
 
 from data.loaders import load_era5_vars
 from data.aggregator import aggregate
-from model import WildfireModel, S1_KEYS, S2_KEYS, ERA5_KEYS, SPATIAL_KEYS, TEMPORAL_KEYS
-from model.dataset import flatten_stats
-from build_tile_cache import load_s1_pre, load_s2_pre, era5_cutoff_from_key, glob_one
+from model import WildfireModel
+from model.dataset import dataset as TileDataset
+from build_tile_cache import load_s1_pre, load_s2_pre, era5_cutoff_from_key
 from train import build_datasets
 
 
@@ -120,37 +127,17 @@ def apply_embargo(tiles, embargo_days):
     return truncated
 
 
-def build_input_tensors(tile, statistic_means, era5_seq_len, spatial_mean, spatial_std,
-                         temporal_mean, temporal_std):
+def build_tile_dataset(tiles, statistic_means, era5_seq_len):
     """
-    Builds input tensors by performing mean imputation, flattening, then z-score normalizing, 
-    similar to model.dataset.py's __getitem__ function.
+    Wraps a new scene's tiles in the real model.dataset.dataset class so
+    inference uses the exact same mean-imputation + flattening logic
+    training uses (__getitem__).
     """
-    s1_stats = dict(tile["s1_stats"]) if tile["s1_stats"] is not None else dict.fromkeys(S1_KEYS)
-    for key in S1_KEYS:
-        if s1_stats[key] is None or (isinstance(s1_stats[key], float) and not np.isfinite(s1_stats[key])):
-            s1_stats[key] = statistic_means[f"mean_{key}"]
-
-    s2_stats = dict(tile["s2_stats"]) if tile["s2_stats"] is not None else dict.fromkeys(S2_KEYS)
-    for key in S2_KEYS:
-        if s2_stats[key] is None or (isinstance(s2_stats[key], float) and not np.isfinite(s2_stats[key])):
-            s2_stats[key] = statistic_means[f"mean_{key}"]
-
-    era5_means = np.array([statistic_means[f"mean_{k}"] for k in ERA5_KEYS]).reshape(-1, 1)
-    if tile["era5_stats"] is None:
-        era5_matrix = np.repeat(era5_means, era5_seq_len, axis=1)
-    else:
-        era5_matrix = np.array([tile["era5_stats"][k] for k in ERA5_KEYS], dtype=np.float64)
-        era5_matrix = np.where(np.isfinite(era5_matrix), era5_matrix, era5_means)
-
-    s1_flat = flatten_stats(s1_stats)
-    s2_flat = flatten_stats(s2_stats)
-    x_spatial = torch.tensor(np.concatenate([list(s1_flat.values()), list(s2_flat.values())])).float()
-    x_temporal = torch.tensor(era5_matrix).float().transpose(0, 1)
-
-    x_spatial = (x_spatial - spatial_mean) / spatial_std
-    x_temporal = (x_temporal - temporal_mean) / temporal_std
-    return x_spatial.unsqueeze(0), x_temporal.unsqueeze(0)  # add batch dim
+    ds = TileDataset.__new__(TileDataset)
+    ds.data_list = list(tiles.items())
+    ds.statistic_means = statistic_means
+    ds.era5_seq_len = era5_seq_len
+    return ds
 
 
 def build_arg_parser():
@@ -168,9 +155,22 @@ def build_arg_parser():
     parser.add_argument("--test-frac", type=float, default=0.15)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--dem-dir", default="/tmp/wildfire_inference_dem")
+    parser.add_argument("--inference-dir", default="inference",
+                         help="Root output dir; results land under "
+                              "<inference-dir>/<run_id>_<checkpoint_stem>/<scene_id>_risk_grid.csv "
+                              "unless --output-csv overrides the path.")
     parser.add_argument("--output-csv", default=None,
-                         help="Optional path to write the per-tile risk grid to as CSV.")
+                         help="Optional explicit path to write the per-tile risk grid to, "
+                              "overriding the default inference/ layout.")
     return parser
+
+
+def default_output_path(inference_dir, checkpoint_path, scene_dir):
+    checkpoint_stem = os.path.splitext(os.path.basename(checkpoint_path))[0]
+    run_id = os.path.basename(os.path.dirname(os.path.abspath(checkpoint_path)))
+    checkpoint_id = f"{run_id}_{checkpoint_stem}" if run_id else checkpoint_stem
+    scene_id = os.path.basename(os.path.normpath(scene_dir))
+    return os.path.join(inference_dir, checkpoint_id, f"{scene_id}_risk_grid.csv"), scene_id
 
 
 def main():
@@ -207,32 +207,55 @@ def main():
         temporal_mean, temporal_std = train_ds.temporal_mean, train_ds.temporal_std
         era5_seq_len = train_ds.inner.era5_seq_len
 
+    metadata_path = os.path.join(args.scene_dir, "metadata.json")
+    scene_meta = {}
+    if os.path.exists(metadata_path):
+        with open(metadata_path) as f:
+            scene_meta = json.load(f)
+
     tiles, era5_lats, era5_longs, cutoff_datetime = load_scene_tiles(args.scene_dir, args.dem_dir)
     tiles = apply_embargo(tiles, embargo_days)
 
-    rows = []
-    with torch.no_grad():
-        for (i, j), tile in tiles.items():
-            x_spatial, x_temporal = build_input_tensors(
-                tile, statistic_means, era5_seq_len, spatial_mean, spatial_std, temporal_mean, temporal_std)
-            head1, _, _, _ = model(x_spatial, x_temporal)
-            rows.append({
-                "i": i, "j": j,
-                "lat": float(era5_lats[i]), "lon": float(era5_longs[j]),
-                "fire_probability_30d": float(head1.item()),
-            })
+    tile_ds = build_tile_dataset(tiles, statistic_means, era5_seq_len)
+    tile_keys = [key for key, _ in tile_ds.data_list]  # same order dataset.__getitem__ indexes into
 
+    # single forward pass over every tile in the scene
+    loader = torch.utils.data.DataLoader(tile_ds, batch_size=len(tile_ds), shuffle=False)
+    x_spatial_batch, x_temporal_batch = next(iter(loader))
+    x_spatial_batch = (x_spatial_batch - spatial_mean) / spatial_std
+    x_temporal_batch = (x_temporal_batch - temporal_mean) / temporal_std
+
+    with torch.no_grad():
+        head1, _, _, _ = model(x_spatial_batch, x_temporal_batch)
+    probabilities = head1.squeeze(1).tolist()
+
+    rows = [
+        {"i": i, "j": j, "lat": float(era5_lats[i]), "lon": float(era5_longs[j]), "fire_probability_30d": prob}
+        for (i, j), prob in zip(tile_keys, probabilities)
+    ]
     grid = pd.DataFrame(rows).sort_values(["i", "j"]).reset_index(drop=True)
-    print(f"\nForecast cutoff: {cutoff_datetime.date()} (~30-day horizon)")
-    print(f"{len(grid)} tiles scored. Risk summary:")
-    print(f"  mean {grid['fire_probability_30d'].mean():.3f}  "
+    scene_verdict = float(grid["fire_probability_30d"].mean())
+    n_high_risk = int((grid["fire_probability_30d"] > 0.5).sum())
+
+    output_csv, scene_id = default_output_path(args.inference_dir, args.checkpoint, args.scene_dir)
+    if args.output_csv:
+        output_csv = args.output_csv
+
+    print(f"\nScene: {scene_id}"
+          + (f" ({scene_meta.get('state')}, {scene_meta.get('fire_name') or scene_meta.get('control_id')})"
+             if scene_meta else ""))
+    print(f"Forecast cutoff: {cutoff_datetime.date()} (~30-day horizon)")
+    print(f"{len(grid)} tiles scored -- {n_high_risk} ({n_high_risk / len(grid):.0%}) above 0.5 probability")
+    print(f"Per-tile stats: mean {grid['fire_probability_30d'].mean():.3f}  "
           f"max {grid['fire_probability_30d'].max():.3f}  "
           f"min {grid['fire_probability_30d'].min():.3f}")
     print(grid.to_string(index=False))
+    print(f"\nVERDICT -- aggregated (mean-across-tiles) fire probability for this scene "
+          f"over the next ~30 days: {scene_verdict:.3f}")
 
-    if args.output_csv:
-        grid.to_csv(args.output_csv, index=False)
-        print(f"\nSaved per-tile risk grid to {args.output_csv}")
+    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    grid.to_csv(output_csv, index=False)
+    print(f"\nSaved per-tile risk grid to {output_csv}")
 
 
 if __name__ == "__main__":
