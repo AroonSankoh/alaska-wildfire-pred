@@ -66,22 +66,32 @@ from build_tile_cache import load_s1_pre, load_s2_pre, era5_cutoff_from_key
 from train import build_datasets
 
 
+def resolve_safe_dir(outer_dir):
+    """
+    Resolves the location of the SAFE dir within the scene (sometimes it's nested).
+    """
+    nested = glob.glob(os.path.join(outer_dir, "*.SAFE"))
+    if len(nested) > 1:
+        raise ValueError(f"Expected at most one nested .SAFE dir under {outer_dir}, found {nested}")
+    return nested[0] if nested else outer_dir
+
+
 def find_scene_inputs(scene_dir):
     """
     Picks the *_pre.SAFE products and the single ERA5 grib out of a scene folder.
     """
-    s1_safe_dirs = glob.glob(os.path.join(scene_dir, "S1_*_pre.SAFE"))
-    s2_safe_dirs = glob.glob(os.path.join(scene_dir, "S2_*_pre.SAFE"))
+    s1_outer_dirs = glob.glob(os.path.join(scene_dir, "S1_*_pre.SAFE"))
+    s2_outer_dirs = glob.glob(os.path.join(scene_dir, "S2_*_pre.SAFE"))
     era5_gribs = glob.glob(os.path.join(scene_dir, "*.grib"))
 
-    if len(s1_safe_dirs) != 1:
-        raise ValueError(f"Expected exactly one S1_*_pre.SAFE dir under {scene_dir}, found {s1_safe_dirs}")
-    if len(s2_safe_dirs) != 1:
-        raise ValueError(f"Expected exactly one S2_*_pre.SAFE dir under {scene_dir}, found {s2_safe_dirs}")
+    if len(s1_outer_dirs) != 1:
+        raise ValueError(f"Expected exactly one S1_*_pre.SAFE dir under {scene_dir}, found {s1_outer_dirs}")
+    if len(s2_outer_dirs) != 1:
+        raise ValueError(f"Expected exactly one S2_*_pre.SAFE dir under {scene_dir}, found {s2_outer_dirs}")
     if len(era5_gribs) != 1:
         raise ValueError(f"Expected exactly one .grib file under {scene_dir}, found {era5_gribs}")
 
-    return s1_safe_dirs[0], s2_safe_dirs[0], era5_gribs[0]
+    return resolve_safe_dir(s1_outer_dirs[0]), resolve_safe_dir(s2_outer_dirs[0]), era5_gribs[0]
 
 
 def load_scene_tiles(scene_dir, dem_output_dir):
@@ -197,9 +207,9 @@ def main():
         statistic_means = checkpoint["statistic_means"]
         era5_seq_len = checkpoint["era5_seq_len"]
     else:
-        print(f"Checkpoint has no saved normalization stats (older run) -- re-deriving from "
+        print(f"Checkpoint has no saved normalization stats (older run), so re-deriving from "
               f"{args.cache_dir} (val_frac={args.val_frac}, test_frac={args.test_frac}, "
-              f"seed={args.seed}). These MUST match the run that produced this checkpoint.")
+              f"seed={args.seed}). These are required to match the run that produced this checkpoint.")
         data = build_datasets(args.cache_dir, args.val_frac, args.test_frac, args.seed)
         train_ds = data["train_ds"]
         statistic_means = train_ds.inner.statistic_means
