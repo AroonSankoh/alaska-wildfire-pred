@@ -372,9 +372,21 @@ def main():
         "n_head": args.n_head,
     }
 
+    # normalization stats are saved each checkpoint so inference can apply the exact
+    # same z-score transform the model was trained under
+    norm_stats = {
+        "spatial_mean": data["train_ds"].spatial_mean,
+        "spatial_std": data["train_ds"].spatial_std,
+        "temporal_mean": data["train_ds"].temporal_mean,
+        "temporal_std": data["train_ds"].temporal_std,
+        "statistic_means": data["train_ds"].inner.statistic_means,
+        "era5_seq_len": data["train_ds"].inner.era5_seq_len,
+    }
+
     best_path = os.path.join(run_dir, "best_model.pt")
     torch.save({"model_state_dict": best_state_dict,
                 **model_config,
+                **norm_stats,
                 "epoch": best_val_metrics["epoch"],
                 "val_loss": best_val_metrics["loss"],
                 "val_balanced_acc": best_val_metrics["balanced_acc"],
@@ -400,6 +412,7 @@ def main():
     final_path = os.path.join(run_dir, "final_model.pt")
     torch.save({"model_state_dict": model.state_dict(),
                 **model_config,
+                **norm_stats,
                 "test_loss": test_metrics["loss"],
                 "test_acc": test_metrics["acc"],
                 "era5_embargo_days": args.era5_embargo_days}, final_path)
