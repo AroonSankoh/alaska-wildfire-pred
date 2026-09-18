@@ -36,8 +36,11 @@ wildfire-pred/
 │   └── run_inference.py
 ├── training/
 │   └── train.py
-├── env.yml
-└── README.md
+├── utils/
+│   └── geoutils.py
+├── LICENSE
+├── README.md
+└── env.yml
 ```
 
 ## Setup 
@@ -120,10 +123,11 @@ This code is released under the MIT License, see the LICENSE file for the full t
 ## Citation
 
 If you use this code or model in your own work, please cite it as:
-
+```
 @software{sankoh2026wildfire,
   author = {Sankoh, Aroon},
   title = {Hybrid Wildfire Detection Model},
   year = {2026},
   url = {https://github.com/aroon-sankoh/western-us-wildfire-pred}
 }
+```
