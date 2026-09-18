@@ -28,8 +28,6 @@ wildfire-pred/
 │   ├── architecture.py
 │   ├── augmentation.py
 │   └── dataset.py
-├── notebooks/
-│   └── sentinel2_demo.ipynb
 ├── scripts/
 │   └── build_tile_cache.py
 │   └── fwi_calculator.py
@@ -123,7 +121,6 @@ This code is released under the MIT License, see the LICENSE file for the full t
 
 If you use this code or model in your own work, please cite it as:
 
-bibtex
 @software{sankoh2026wildfire,
   author = {Sankoh, Aroon},
   title = {Hybrid Wildfire Detection Model},
