@@ -37,7 +37,7 @@ wildfire-pred/
 ├── training/
 │   └── train.py
 ├── utils/
-│   └── geoutils.py
+│   └── geo_utils.py
 ├── LICENSE
 ├── README.md
 └── env.yml
@@ -59,10 +59,12 @@ Each fire is paired with three controls that match the fires EPA Level III Eco-r
 same directory level that is one level below the scene directory itself. You can find the full dataset I used for model training and download individual scenes here: (https://huggingface.co/datasets/aroon-sankoh/wildfire-prediction).
 
 ## Usage 
+
 Once you have identified a dataset for analysis, it is highly recommended to build and cache aggregated tiles before anything else. This way it won't be necessary to repeatedly load and aggregate source data whenever performing model training 
 or inference. Investigate and edit the global variables within `scripts/build_tile_cache.py` to ensure the correct source data is used for tiling. Note that this script (and a few others, like the FWI/dataset collection scripts) pulls directly from my own S3 bucket, so you'll need your own AWS credentials and bucket configured if you want to run it yourself against your own scenes. If you just want to run inference or the calculators against the published HuggingFace dataset, you don't need any AWS access at all.
 
 ### Training 
+
 After building and caching your ERA-5 grid tiles, you can train a WildfireModel with `training/train.py`. Since only local tensors are used, 
 training can efficiently be completed using just CPU. All fire tiles are labeled 1.0 and control tiles are labeled 0.0, the wildfire detection model
 was originally built to predict across 3 seperate time horizons so (1 month, 3 month, and 6 months) but due to dataset constraints, all heads 
@@ -70,6 +72,7 @@ output the same labels. I decided to leave the functionality of the 3 heads in t
 prediction in the future. Training should take <2 hours and it's generally not recommended to train for longer than 12 epochs for risk of over-fitting. 
 
 ### Hyperparameter Sweeps
+
 The hyperparameter sweep script does a random search of different hyperparameter combinations over WildfireModel training config. Each 
 trial gets the same split, normalization, and class weighting. The model runs --trial-epochs epochs and allows the user to specify the 
 fraction of the dataset used for validation and testing. --n-trials also allows the user to decide how many configurations will be 
@@ -78,6 +81,7 @@ global variables at the top of the script: `scripts/hyperparameter_sweep.py`). T
 recommended the user re-train the best config with actual trainings script for proper checkpointing.
 
 ### Inference 
+
 Once a single model has completed training, the `scripts/run_inference.py` script allows you 'predict' on a single, unlabeled fire scene. It 
 outputs a per-tile fire probability grid that represents the chance of a wildfire occurring within a 1 month period of each ERA-5 tile. The 
 output is a full risk grid csv file that is saved to an inference/ directory and is tied to the specific model checkpoint and scene that 
@@ -85,18 +89,21 @@ inference was performed on. Summary statistics, such as the \# of the tiles with
 tiles, and the full-scene aggregated mean chance of a fire occurring are printed. 
 
 ### FWI Calculator 
+
 The Canadian Fire Weather Index is a useful tool for calculating the chance of a fire occurring in boreal forests, such as those found in Canada, 
 Alaska, and parts of the northwestern United States. I re-implemented the FWI calculator to use a benchmark for my full wildfire model performance
 in `data/loaders/era5_preprocessing.py`, and used it to validate that my model identified more subtle patterns in time-series and satellite 
 data to wildfires. FWI only uses ERA-5 time-series data though and so is less costly to run. See `scripts/fwi_calculator.py` to run a single scene.
 
 ### Burn Severity Calculator 
+
 The delta Normalized Burn Ratio is a useful tool for quantifying the burn severity of an area affected by a wildfire. It works by diffing the NBR
 of Sentinel-2 pre fire and Sentinel-2 post fire. I implemented a dNBR calculator in `scripts/nbr_burn_severity_calculator.py` and classified it 
 using the fire's own MTBS (Monitoring Trends in Burn Severity) calibrated dNBR thresholds. See the aforementioned script for requirements and 
 instructions on how to use. 
 
 ## Model Performance & Limitations
+
 The model is still a work in progress as its' performance is modest. The current best checkpoint sits around 0.69-0.73 balanced accuracy on my own test split, meaning the model currectly classifies ~70% of scenes correctly. 
 
 Right now the model is doing same-day classification, not true forward forecasting. The ERA-5 window each tile sees runs right up through the ignition/control date itself with zero forecast lead time, so the question it's answering is "does this look like a fire day or a control day" rather than "will this area burn in the next 30 days." I ran an ablation study that truncated the last 7 days of ERA-5 data from every tile to see how much of that ~0.70-0.73 number depended on near-ignition weather specifically, and balanced accuracy only dropped marginally (still 0.70-0.72 range), which suggests accuracy is not related to a same-day-weather signal, but I cannot disprove the framing caveat still stands until I retrain with a real embargoed window.
