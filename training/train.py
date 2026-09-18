@@ -1,19 +1,11 @@
 """
 Trains WildfireModel off the cached tile pickles produced by
-build_tile_cache.py. Never touches S3/SAFE zips -- pure local tensor work,
-which is why this is expected to run fine on CPU (no CUDA needed).
+build_tile_cache.py. All fire tiles get label 1.0, control tiles get 
+label 0.0 (uniformly across all three heads). Once the training dataset
+is tweaked to accept per-horizon ground truth, the target-building logic 
+can be swapped in run_epoch() to differentiate each head's prediction. 
 
-Uses a real torch.utils.data.DataLoader with batch collation -- this
-assumes model/architecture.py has been updated to accept a leading batch
-dimension on x_spatial/x_temporal (WildfireModel.forward and
-TransformerEncoder.forward), rather than the single-tile-at-a-time
-gradient-accumulation workaround this script used previously.
-
-Labels: fire tiles get label 1.0, control tiles get label 0.0 (uniformly
-across all three 1mo/3mo/6mo heads, per your call on this). If you later get
-real per-horizon ground truth, swap the target-building logic in run_epoch().
-
-build_datasets() and train_model() are also imported directly by
+Aside: build_datasets() and train_model() are also imported directly by
 scripts/hyperparameter_sweep.py, so the dataset only gets built once and
 reused across every trial instead of re-reading tile_cache/ from disk
 each time.

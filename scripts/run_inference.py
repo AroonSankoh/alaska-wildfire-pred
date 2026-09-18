@@ -13,21 +13,9 @@ Requirements:
     <scene-dir>/ERA5_..._YYYYMMDD.grib
     <scene-dir>/metadata.json
 
-    This matches the dataset's actual per-scene folder as published (e.g.
-    one of the fires/{state}/{scene}/ or controls/{state}/{scene}/ folders),
-    with all files sitting flat alongside eachother. Despite the ".SAFE"
-    suffix, each *_pre.SAFE/*_post.SAFE entry is actually a zip archive (same
-    as the original S3 fires/controls pipeline) wrapping one nested,
-    differently-named *.SAFE directory -- this script extracts it to
-    --extract-dir automatically (mirrors build_tile_cache.py's
-    download_and_extract()). An already-extracted directory works too.
-
-    Only the *_pre.SAFE products are used for inference (matching how the
-    model was trained -- see build_tile_cache.py/load_s1_pre/load_s2_pre),
-    the *_post.SAFE ones are ignored since there's no "post" for a forecast
-    that hasn't happened yet. Picked out by filename suffix, so this works
-    directly on a fire or control folder pulled straight from the dataset --
-    no repackaging needed.
+    This scene structure mimics exactly how he fire scenes were packaged in the 
+    associated published dataset, so the user can just download a scene directly 
+    from it to test.
 
     The ERA5 grib filename must end in an 8-digit date (same convention as the
     training pipeline), as that date is used as the forecast cutoff, i.e. "predict
